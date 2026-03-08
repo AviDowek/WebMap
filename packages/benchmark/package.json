@@ -1,0 +1,21 @@
+{
+  "name": "@webmap/benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "run-bench": "node dist/runner.js",
+    "report": "node dist/report.js"
+  },
+  "dependencies": {
+    "@webmap/core": "*",
+    "@anthropic-ai/sdk": "^0.39.0",
+    "playwright": "^1.50.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
