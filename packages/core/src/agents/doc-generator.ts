@@ -34,6 +34,35 @@ interface GeneratorOptions {
   synthesisModel?: string;
 }
 
+/** Safely extract text from an Anthropic API response */
+function extractText(response: Anthropic.Message): string {
+  if (!response.content || response.content.length === 0) return "";
+  const block = response.content[0];
+  return block.type === "text" ? block.text : "";
+}
+
+/** Safely parse JSON from LLM output, returning null on failure */
+function safeParseJson(text: string): Record<string, unknown> | null {
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return null;
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** Sanitize a string from LLM output — strip HTML tags and control chars */
+function sanitize(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/<[^>]*>/g, "") // strip HTML tags
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "") // strip control chars
+    .trim();
+}
+
 export class DocGenerator {
   private client: Anthropic;
   private pageModel: string;
@@ -58,7 +87,7 @@ export class DocGenerator {
     const domain = new URL(rootUrl).hostname;
 
     // Step 1: Enrich each page with LLM-generated descriptions
-    const enrichedPages = await this.enrichPages(pages);
+    const enrichedPages = await this.enrichPages(pages, rootUrl);
 
     // Step 2: Build site map
     const siteMap = this.buildSiteMap(enrichedPages, rootUrl);
@@ -97,14 +126,15 @@ export class DocGenerator {
    * Enrich pages with LLM-generated purpose, howToReach, and dynamic behavior.
    * Processes pages in parallel batches.
    */
-  private async enrichPages(pages: PageData[]): Promise<PageData[]> {
+  private async enrichPages(pages: PageData[], rootUrl: string): Promise<PageData[]> {
     const batchSize = 5;
     const enriched: PageData[] = [];
+    const pageList = pages.map((p) => p.url).join("\n");
 
     for (let i = 0; i < pages.length; i += batchSize) {
       const batch = pages.slice(i, i + batchSize);
       const results = await Promise.all(
-        batch.map((page) => this.enrichSinglePage(page))
+        batch.map((page) => this.enrichSinglePage(page, rootUrl, pageList))
       );
       enriched.push(...results);
     }
@@ -112,27 +142,36 @@ export class DocGenerator {
     return enriched;
   }
 
-  private async enrichSinglePage(page: PageData): Promise<PageData> {
+  private async enrichSinglePage(
+    page: PageData,
+    rootUrl: string,
+    pageList: string
+  ): Promise<PageData> {
     const prompt = `Analyze this web page and provide:
 1. A one-sentence PURPOSE describing what this page does
-2. For each interactive element, what the expected RESULT of interacting with it is
-3. Any DYNAMIC BEHAVIOR (infinite scroll, auto-refresh, modals, toasts, etc.)
+2. HOW TO REACH this page from the homepage (${rootUrl}) — describe the navigation steps using accessibility selectors
+3. For each interactive element, what the expected RESULT of interacting with it is
+4. Any DYNAMIC BEHAVIOR (infinite scroll, auto-refresh, modals, toasts, etc.)
 
 Page URL: ${page.url}
 Page Title: ${page.title}
 
 Accessibility Tree Snapshot:
-${page.accessibilitySnapshot?.substring(0, 4000) || "Not available"}
+${page.accessibilitySnapshot?.substring(0, 8000) || "Not available"}
 
-Interactive Elements Found:
-${page.elements.map((e) => `- ${e.role} "${e.name}" [${e.state}]`).join("\n")}
+Interactive Elements Found (provide a result for EACH element below):
+${page.elements.map((e) => `- ${e.role} "${e.name}" [${e.state}] selector: \`${e.selector}\``).join("\n")}
 
 Forms Found:
 ${page.forms.map((f) => `- ${f.name}: ${f.fields.length} fields`).join("\n") || "None"}
 
+Other pages on this site:
+${pageList.substring(0, 1000)}
+
 Respond in this exact JSON format:
 {
   "purpose": "string",
+  "howToReach": "Navigate to homepage then click ... (role=link, name=\\"...\\")",
   "elementResults": { "selectorString": "expected result description" },
   "dynamicBehavior": ["behavior 1", "behavior 2"]
 }`;
@@ -140,7 +179,7 @@ Respond in this exact JSON format:
     try {
       const response = await this.client.messages.create({
         model: this.pageModel,
-        max_tokens: 2000,
+        max_tokens: 4000,
         system: SYSTEM_PROMPT,
         messages: [{ role: "user", content: prompt }],
       });
@@ -149,28 +188,27 @@ Respond in this exact JSON format:
         (response.usage?.input_tokens || 0) +
         (response.usage?.output_tokens || 0);
 
-      const text =
-        response.content[0].type === "text" ? response.content[0].text : "";
+      const text = extractText(response);
+      const data = safeParseJson(text);
 
-      // Parse the JSON response
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const data = JSON.parse(jsonMatch[0]);
-
-        page.purpose = data.purpose || page.title;
-        page.dynamicBehavior = data.dynamicBehavior || [];
+      if (data) {
+        page.purpose = sanitize(data.purpose) || page.title;
+        page.howToReach = sanitize(data.howToReach) || "";
+        page.dynamicBehavior = Array.isArray(data.dynamicBehavior)
+          ? data.dynamicBehavior.map(sanitize).filter(Boolean)
+          : [];
 
         // Update element results
-        if (data.elementResults) {
+        if (data.elementResults && typeof data.elementResults === "object") {
+          const results = data.elementResults as Record<string, unknown>;
           for (const element of page.elements) {
-            if (data.elementResults[element.selector]) {
-              element.result = data.elementResults[element.selector];
+            if (results[element.selector]) {
+              element.result = sanitize(results[element.selector]);
             }
           }
         }
       }
-    } catch (error) {
-      // If LLM fails, use fallback descriptions
+    } catch {
       page.purpose = page.title || "Unknown page";
     }
 
@@ -181,9 +219,6 @@ Respond in this exact JSON format:
    * Build a hierarchical site map from flat page list.
    */
   private buildSiteMap(pages: PageData[], rootUrl: string): SiteMap {
-    const root = new URL(rootUrl);
-
-    // Sort pages by URL depth
     const sortedPages = [...pages].sort(
       (a, b) =>
         new URL(a.url).pathname.split("/").length -
@@ -198,13 +233,12 @@ Respond in this exact JSON format:
         url: page.url,
         title: page.title,
         description: page.purpose,
-        requiresAuth: false, // Will be detected by flow mapper
+        requiresAuth: false,
         children: [],
       };
       nodeMap.set(url.pathname, node);
     }
 
-    // Build tree by connecting parent-child based on URL structure
     const rootNodes: SiteMapNode[] = [];
     for (const [pathname, node] of nodeMap) {
       const parentPath = pathname.split("/").slice(0, -1).join("/") || "/";
@@ -216,10 +250,7 @@ Respond in this exact JSON format:
       }
     }
 
-    return {
-      rootUrl,
-      pages: rootNodes,
-    };
+    return { rootUrl, pages: rootNodes };
   }
 
   /**
@@ -253,7 +284,7 @@ Respond in this exact JSON format:
         {
           "step": 1,
           "description": "What to do",
-          "selector": "role=button, name=\"Submit\"",
+          "selector": "role=button, name=\\"Submit\\"",
           "actionType": "click|type|select|navigate|wait",
           "value": "optional value for type/select",
           "expectedResult": "What should happen"
@@ -275,13 +306,35 @@ Respond in this exact JSON format:
         (response.usage?.input_tokens || 0) +
         (response.usage?.output_tokens || 0);
 
-      const text =
-        response.content[0].type === "text" ? response.content[0].text : "";
+      const text = extractText(response);
+      const data = safeParseJson(text);
 
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const data = JSON.parse(jsonMatch[0]);
-        return data.workflows || [];
+      if (data && Array.isArray(data.workflows)) {
+        return data.workflows
+          .filter(
+            (w: unknown): w is Record<string, unknown> =>
+              typeof w === "object" && w !== null
+          )
+          .map((w) => ({
+            name: sanitize(w.name),
+            description: sanitize(w.description),
+            steps: Array.isArray(w.steps)
+              ? w.steps
+                  .filter(
+                    (s: unknown): s is Record<string, unknown> =>
+                      typeof s === "object" && s !== null
+                  )
+                  .map((s) => ({
+                    step: typeof s.step === "number" ? s.step : 0,
+                    description: sanitize(s.description),
+                    selector: sanitize(s.selector) || undefined,
+                    actionType: sanitize(s.actionType) || "click",
+                    value: sanitize(s.value) || undefined,
+                    expectedResult: sanitize(s.expectedResult) || "",
+                  }))
+              : [],
+          }))
+          .filter((w: { name: string }) => w.name);
       }
     } catch {
       // Return empty if detection fails
@@ -315,9 +368,7 @@ Respond in this exact JSON format:
         (response.usage?.input_tokens || 0) +
         (response.usage?.output_tokens || 0);
 
-      return response.content[0].type === "text"
-        ? response.content[0].text
-        : domain;
+      return sanitize(extractText(response)) || domain;
     } catch {
       return `Website at ${domain}`;
     }

@@ -16,9 +16,7 @@
   "dependencies": {
     "crawlee": "^3.12.0",
     "playwright": "^1.50.0",
-    "@anthropic-ai/sdk": "^0.39.0",
-    "sharp": "^0.33.0",
-    "zod": "^3.24.0"
+    "@anthropic-ai/sdk": "^0.39.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

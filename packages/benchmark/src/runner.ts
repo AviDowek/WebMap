@@ -1,14 +1,20 @@
 /**
  * WebMap Benchmark Runner — A/B test agent performance with and without docs.
  *
- * Tests whether WebMap documentation measurably improves AI agent
- * task success rates, reduces token usage, and increases consistency.
+ * Uses Claude's Computer Use Agent (CUA) with real screenshots to drive
+ * a Playwright browser. Tests whether WebMap documentation measurably
+ * improves AI agent task success rates, reduces token usage, and
+ * increases consistency.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import type {
+  BetaMessageParam,
+  BetaContentBlockParam,
+} from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { chromium, type Browser, type Page } from "playwright";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+
+// ─── Types ───────────────────────────────────────────────────────────
 
 export interface BenchmarkTask {
   /** Unique task ID */
@@ -21,6 +27,8 @@ export interface BenchmarkTask {
   successCriteria: string;
   /** Category (navigation, form-fill, search, purchase, etc.) */
   category: string;
+  /** Source: 'sample' | 'manual' | 'ai-generated' */
+  source?: string;
 }
 
 export interface TaskResult {
@@ -58,7 +66,7 @@ export interface BenchmarkResult {
   };
 }
 
-interface AggregateMetrics {
+export interface AggregateMetrics {
   totalTasks: number;
   successRate: number;
   avgTokensPerTask: number;
@@ -66,9 +74,239 @@ interface AggregateMetrics {
   avgSteps: number;
 }
 
+// ─── CUA Constants ───────────────────────────────────────────────────
+
+const DISPLAY_WIDTH = 1280;
+const DISPLAY_HEIGHT = 720;
+const MAX_STEPS = 25;
+
+// ─── CUA Doc Formatter ──────────────────────────────────────────────
+
 /**
- * Run a single task using Claude as the browser agent.
+ * Transform raw WebMap markdown docs into a CUA-friendly briefing.
+ *
+ * Keeps: site map, page purposes, navigation hints, workflow summaries,
+ *        dynamic behavior notes.
+ * Strips: accessibility selectors, element tables, form field tables.
  */
+export function formatDocsForCUA(markdown: string): string {
+  const lines = markdown.split("\n");
+  const output: string[] = [];
+  let skip = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Skip Interactive Elements tables
+    if (line.startsWith("### Interactive Elements")) {
+      skip = true;
+      continue;
+    }
+
+    // Skip Forms tables
+    if (line.startsWith("### Forms")) {
+      skip = true;
+      continue;
+    }
+
+    // Stop skipping at next heading
+    if (skip && (line.startsWith("## ") || line.startsWith("### "))) {
+      if (
+        !line.startsWith("### Interactive Elements") &&
+        !line.startsWith("### Forms")
+      ) {
+        skip = false;
+      } else {
+        continue;
+      }
+    }
+
+    if (skip) continue;
+
+    // Skip table rows (markdown tables with |)
+    if (line.startsWith("|") && line.includes("|")) continue;
+
+    // Skip Submit: lines with selectors
+    if (line.startsWith("Submit: `")) continue;
+
+    // Strip inline selectors: ` → \`...\`` patterns from workflow steps
+    let cleaned = line.replace(/ → `[^`]*`/g, "");
+
+    // Strip backtick selectors that remain
+    cleaned = cleaned.replace(/`[^`]*`/g, "");
+
+    // Skip crawl metadata line
+    if (cleaned.startsWith("*Crawled:")) continue;
+
+    // Clean up excess whitespace from removals
+    cleaned = cleaned.replace(/\s{2,}/g, " ").trimEnd();
+
+    // Skip lines that became empty after stripping (but keep intentional blank lines)
+    if (cleaned === "" && line.trim() !== "") continue;
+
+    output.push(cleaned);
+  }
+
+  // Remove consecutive blank lines
+  const deduped: string[] = [];
+  for (const line of output) {
+    if (line === "" && deduped.length > 0 && deduped[deduped.length - 1] === "") {
+      continue;
+    }
+    deduped.push(line);
+  }
+
+  return deduped.join("\n").trim();
+}
+
+// ─── Key mapping ─────────────────────────────────────────────────────
+
+const KEY_MAP: Record<string, string> = {
+  Return: "Enter",
+  BackSpace: "Backspace",
+  space: " ",
+  Tab: "Tab",
+  Escape: "Escape",
+  Delete: "Delete",
+  Home: "Home",
+  End: "End",
+  Page_Up: "PageUp",
+  Page_Down: "PageDown",
+  Left: "ArrowLeft",
+  Right: "ArrowRight",
+  Up: "ArrowUp",
+  Down: "ArrowDown",
+};
+
+function mapCuaKeyToPlaywright(key: string): string {
+  // Handle combo keys like "ctrl+a" → "Control+a"
+  if (key.includes("+")) {
+    return key
+      .split("+")
+      .map((part) => {
+        const lower = part.toLowerCase();
+        if (lower === "ctrl" || lower === "control") return "Control";
+        if (lower === "alt") return "Alt";
+        if (lower === "shift") return "Shift";
+        if (lower === "meta" || lower === "super" || lower === "cmd")
+          return "Meta";
+        return KEY_MAP[part] || part;
+      })
+      .join("+");
+  }
+  return KEY_MAP[key] || key;
+}
+
+// ─── Screenshot ──────────────────────────────────────────────────────
+
+async function captureScreenshot(page: Page): Promise<string> {
+  const buffer = await page.screenshot({ type: "jpeg", quality: 75 });
+  return buffer.toString("base64");
+}
+
+// ─── CUA Action Execution ───────────────────────────────────────────
+
+async function executeComputerAction(
+  page: Page,
+  input: Record<string, unknown>
+): Promise<void> {
+  const action = input.action as string;
+
+  switch (action) {
+    case "mouse_move":
+      if (Array.isArray(input.coordinate)) {
+        await page.mouse.move(input.coordinate[0], input.coordinate[1]);
+      }
+      break;
+
+    case "left_click":
+      if (Array.isArray(input.coordinate)) {
+        await page.mouse.click(input.coordinate[0], input.coordinate[1]);
+      }
+      break;
+
+    case "right_click":
+      if (Array.isArray(input.coordinate)) {
+        await page.mouse.click(input.coordinate[0], input.coordinate[1], {
+          button: "right",
+        });
+      }
+      break;
+
+    case "double_click":
+      if (Array.isArray(input.coordinate)) {
+        await page.mouse.dblclick(input.coordinate[0], input.coordinate[1]);
+      }
+      break;
+
+    case "triple_click":
+      if (Array.isArray(input.coordinate)) {
+        await page.mouse.click(input.coordinate[0], input.coordinate[1], {
+          clickCount: 3,
+        });
+      }
+      break;
+
+    case "middle_click":
+      if (Array.isArray(input.coordinate)) {
+        await page.mouse.click(input.coordinate[0], input.coordinate[1], {
+          button: "middle",
+        });
+      }
+      break;
+
+    case "type":
+      if (typeof input.text === "string") {
+        await page.keyboard.type(input.text);
+      }
+      break;
+
+    case "key":
+      if (typeof input.text === "string") {
+        await page.keyboard.press(mapCuaKeyToPlaywright(input.text));
+      }
+      break;
+
+    case "scroll":
+      if (Array.isArray(input.coordinate)) {
+        await page.mouse.move(input.coordinate[0], input.coordinate[1]);
+      }
+      await page.mouse.wheel(
+        (input.delta_x as number) || 0,
+        (input.delta_y as number) || 0
+      );
+      break;
+
+    case "left_click_drag":
+      if (
+        Array.isArray(input.start_coordinate) &&
+        Array.isArray(input.coordinate)
+      ) {
+        await page.mouse.move(
+          input.start_coordinate[0],
+          input.start_coordinate[1]
+        );
+        await page.mouse.down();
+        await page.mouse.move(input.coordinate[0], input.coordinate[1]);
+        await page.mouse.up();
+      }
+      break;
+
+    case "screenshot":
+      // No action — screenshot is taken after every action anyway
+      break;
+
+    case "wait":
+      await page.waitForTimeout(2000);
+      break;
+
+    default:
+      break;
+  }
+}
+
+// ─── Run a single task with Claude CUA ──────────────────────────────
+
 async function runTask(
   client: Anthropic,
   browser: Browser,
@@ -81,98 +319,175 @@ async function runTask(
   let success = false;
   let error: string | undefined;
 
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
+  });
   const page = await context.newPage();
 
   try {
     await page.goto(task.url, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2000);
+
+    const initialScreenshot = await captureScreenshot(page);
+
+    const baseInstructions = `When you have completed the task, respond with a text message containing "TASK_COMPLETE" and a brief summary.
+If you cannot complete the task, respond with "TASK_FAILED" and the reason.`;
 
     const systemPrompt = documentation
-      ? `You are a web browser agent. You navigate websites to complete tasks.
+      ? `You are a browser automation agent completing tasks on websites.
+You have a site guide for this website. Use it to understand the site structure and navigate efficiently — it tells you WHAT pages exist, WHERE to find features, and WHAT workflows are available. You still need to use the screenshots to visually locate and click on elements.
 
-You have documentation for this website:
+SITE GUIDE:
+${formatDocsForCUA(documentation)}
 
-${documentation}
+${baseInstructions}`
+      : `You are a browser automation agent completing tasks on websites.
+Analyze the screenshots to understand the page and interact with elements to complete the given task.
 
-Use the accessibility selectors from the documentation to interact with elements.
-Respond with actions in JSON format: {"action": "click|type|navigate|done|fail", "selector": "...", "value": "..."}`
-      : `You are a web browser agent. You navigate websites to complete tasks.
-Analyze the page content and interact with elements to complete the given task.
-Respond with actions in JSON format: {"action": "click|type|navigate|done|fail", "selector": "...", "value": "..."}`;
+${baseInstructions}`;
 
-    const maxSteps = 15;
-    for (let step = 0; step < maxSteps; step++) {
-      // Get current page state via accessibility snapshot
-      let snapshot: string;
-      try {
-        snapshot = await page.locator("body").ariaSnapshot();
-      } catch {
-        snapshot = await page.title();
-      }
-
-      const currentUrl = page.url();
-
-      const response = await client.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 500,
-        system: systemPrompt,
-        messages: [
+    const messages: BetaMessageParam[] = [
+      {
+        role: "user",
+        content: [
           {
-            role: "user",
-            content: `Task: ${task.instruction}\nSuccess criteria: ${task.successCriteria}\n\nCurrent URL: ${currentUrl}\nPage state:\n${snapshot.substring(0, 3000)}\n\nWhat is the next action?`,
+            type: "text",
+            text: `Task: ${task.instruction}\nSuccess criteria: ${task.successCriteria}\n\nHere is the current browser screenshot:`,
+          },
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/jpeg",
+              data: initialScreenshot,
+            },
           },
         ],
+      },
+    ];
+
+    for (let step = 0; step < MAX_STEPS; step++) {
+      const response = await client.beta.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        system: systemPrompt,
+        tools: [
+          {
+            type: "computer_20250124",
+            name: "computer",
+            display_width_px: DISPLAY_WIDTH,
+            display_height_px: DISPLAY_HEIGHT,
+          },
+        ],
+        messages,
+        betas: ["computer-use-2025-01-24"],
       });
 
       tokensUsed +=
         (response.usage?.input_tokens || 0) +
         (response.usage?.output_tokens || 0);
 
-      const text =
-        response.content[0].type === "text" ? response.content[0].text : "";
+      messages.push({ role: "assistant", content: response.content });
 
-      // Parse action
-      const jsonMatch = text.match(/\{[\s\S]*?\}/);
-      if (!jsonMatch) {
-        actions.push(`Step ${step + 1}: Could not parse action`);
-        continue;
-      }
-
-      const action = JSON.parse(jsonMatch[0]);
-      actions.push(
-        `Step ${step + 1}: ${action.action} ${action.selector || ""} ${action.value || ""}`
+      const toolUseBlocks = response.content.filter(
+        (
+          b
+        ): b is {
+          type: "tool_use";
+          id: string;
+          name: string;
+          input: unknown;
+        } => b.type === "tool_use"
       );
 
-      if (action.action === "done") {
-        success = true;
-        break;
-      }
+      // If no tool calls or end_turn → check for completion
+      if (toolUseBlocks.length === 0 || response.stop_reason === "end_turn") {
+        const textBlocks = response.content.filter((b) => b.type === "text");
+        const fullText = textBlocks
+          .map((b) => (b as unknown as { text: string }).text)
+          .join(" ");
 
-      if (action.action === "fail") {
-        error = action.value || "Agent reported failure";
-        break;
-      }
-
-      // Execute the action
-      try {
-        if (action.action === "click" && action.selector) {
-          await page.locator(action.selector).first().click({ timeout: 5000 });
-        } else if (action.action === "type" && action.selector && action.value) {
-          await page
-            .locator(action.selector)
-            .first()
-            .fill(action.value, { timeout: 5000 });
-        } else if (action.action === "navigate" && action.value) {
-          await page.goto(action.value, { waitUntil: "domcontentloaded" });
+        if (fullText.includes("TASK_COMPLETE")) {
+          success = true;
+          actions.push(`Step ${step + 1}: TASK_COMPLETE`);
+        } else if (fullText.includes("TASK_FAILED")) {
+          error = fullText;
+          actions.push(`Step ${step + 1}: TASK_FAILED`);
+        } else {
+          actions.push(
+            `Step ${step + 1}: Agent stopped without explicit completion signal`
+          );
         }
-      } catch (actionError) {
-        actions.push(
-          `  → Error: ${actionError instanceof Error ? actionError.message : actionError}`
-        );
+        break;
       }
 
-      // Wait for any navigation/updates
-      await page.waitForTimeout(1000);
+      // Execute each tool call and return screenshots
+      const toolResults: BetaContentBlockParam[] = [];
+
+      for (const toolUse of toolUseBlocks) {
+        const input = toolUse.input as Record<string, unknown>;
+        const actionStr = `${input.action}${
+          Array.isArray(input.coordinate)
+            ? ` (${input.coordinate[0]},${input.coordinate[1]})`
+            : ""
+        }${typeof input.text === "string" ? ` "${input.text}"` : ""}`;
+        actions.push(`Step ${step + 1}: ${actionStr}`);
+
+        try {
+          await executeComputerAction(page, input);
+          await page.waitForTimeout(500);
+
+          const screenshot = await captureScreenshot(page);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: "image/jpeg",
+                  data: screenshot,
+                },
+              },
+            ],
+          });
+        } catch (actionError) {
+          let screenshot = "";
+          try {
+            screenshot = await captureScreenshot(page);
+          } catch {
+            // ignore screenshot failure
+          }
+
+          const errMsg =
+            actionError instanceof Error
+              ? actionError.message
+              : String(actionError);
+          actions.push(`  → Error: ${errMsg}`);
+
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: screenshot
+              ? [
+                  { type: "text", text: `Action failed: ${errMsg}` },
+                  {
+                    type: "image",
+                    source: {
+                      type: "base64",
+                      media_type: "image/jpeg",
+                      data: screenshot,
+                    },
+                  },
+                ]
+              : `Action failed: ${errMsg}`,
+            is_error: true,
+          });
+        }
+      }
+
+      messages.push({ role: "user", content: toolResults });
     }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
@@ -191,7 +506,9 @@ Respond with actions in JSON format: {"action": "click|type|navigate|done|fail",
   };
 }
 
-function computeMetrics(results: TaskResult[]): AggregateMetrics {
+// ─── Metrics ─────────────────────────────────────────────────────────
+
+export function computeMetrics(results: TaskResult[]): AggregateMetrics {
   const total = results.length;
   const successes = results.filter((r) => r.success).length;
   const totalTokens = results.reduce((s, r) => s + r.tokensUsed, 0);
@@ -207,54 +524,67 @@ function computeMetrics(results: TaskResult[]): AggregateMetrics {
   };
 }
 
-/**
- * Run the full A/B benchmark: tasks without docs vs tasks with docs.
- */
+// ─── Run the full A/B benchmark ─────────────────────────────────────
+
 export async function runBenchmark(
   tasks: BenchmarkTask[],
   documentation: Map<string, string>,
-  options?: { apiKey?: string }
+  options?: {
+    apiKey?: string;
+    onPhaseChange?: (
+      phase: "baseline" | "with-docs",
+      tasksCompleted: number
+    ) => void;
+  }
 ): Promise<BenchmarkResult> {
   const apiKey = options?.apiKey || process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error("ANTHROPIC_API_KEY required for benchmarks");
   }
 
+  const onPhase = options?.onPhaseChange || (() => {});
   const client = new Anthropic({ apiKey });
   const browser = await chromium.launch({ headless: true });
 
-  console.log(`Running benchmark with ${tasks.length} tasks...`);
+  console.log(`Running CUA benchmark with ${tasks.length} tasks...`);
   console.log("Phase 1: Baseline (no documentation)...");
 
-  // Run baseline (no docs)
   const baselineResults: TaskResult[] = [];
+  onPhase("baseline", 0);
   for (const task of tasks) {
     console.log(`  [baseline] ${task.id}: ${task.instruction}`);
     const result = await runTask(client, browser, task);
     baselineResults.push(result);
-    console.log(`    → ${result.success ? "SUCCESS" : "FAIL"} (${result.tokensUsed} tokens, ${result.steps} steps)`);
+    onPhase("baseline", baselineResults.length);
+    console.log(
+      `    → ${result.success ? "SUCCESS" : "FAIL"} (${result.tokensUsed} tokens, ${result.steps} steps)`
+    );
   }
 
   console.log("\nPhase 2: With documentation...");
 
-  // Run with docs
   const withDocsResults: TaskResult[] = [];
+  onPhase("with-docs", 0);
   for (const task of tasks) {
     const domain = new URL(task.url).hostname;
     const docs = documentation.get(domain);
-    console.log(`  [with-docs] ${task.id}: ${task.instruction}${docs ? " (docs available)" : " (no docs)"}`);
+    console.log(
+      `  [with-docs] ${task.id}: ${task.instruction}${docs ? " (docs available)" : " (no docs)"}`
+    );
     const result = await runTask(client, browser, task, docs);
     withDocsResults.push(result);
-    console.log(`    → ${result.success ? "SUCCESS" : "FAIL"} (${result.tokensUsed} tokens, ${result.steps} steps)`);
+    onPhase("with-docs", withDocsResults.length);
+    console.log(
+      `    → ${result.success ? "SUCCESS" : "FAIL"} (${result.tokensUsed} tokens, ${result.steps} steps)`
+    );
   }
 
   await browser.close();
 
-  // Compute metrics
   const baselineMetrics = computeMetrics(baselineResults);
   const withDocsMetrics = computeMetrics(withDocsResults);
 
-  const result: BenchmarkResult = {
+  return {
     timestamp: new Date().toISOString(),
     baseline: baselineResults,
     withDocs: withDocsResults,
@@ -262,10 +592,14 @@ export async function runBenchmark(
       baseline: baselineMetrics,
       withDocs: withDocsMetrics,
       improvement: {
-        successRateDelta: withDocsMetrics.successRate - baselineMetrics.successRate,
+        successRateDelta:
+          withDocsMetrics.successRate - baselineMetrics.successRate,
         tokenReduction:
           baselineMetrics.avgTokensPerTask > 0
-            ? (1 - withDocsMetrics.avgTokensPerTask / baselineMetrics.avgTokensPerTask) * 100
+            ? (1 -
+                withDocsMetrics.avgTokensPerTask /
+                  baselineMetrics.avgTokensPerTask) *
+              100
             : 0,
         speedup:
           withDocsMetrics.avgDurationMs > 0
@@ -274,18 +608,15 @@ export async function runBenchmark(
       },
     },
   };
-
-  return result;
 }
 
-/**
- * Pretty-print benchmark results.
- */
+// ─── Pretty print ────────────────────────────────────────────────────
+
 export function printBenchmarkSummary(result: BenchmarkResult): void {
   const { baseline, withDocs, improvement } = result.summary;
 
   console.log("\n" + "=".repeat(60));
-  console.log("  BENCHMARK RESULTS");
+  console.log("  CUA BENCHMARK RESULTS");
   console.log("=".repeat(60));
   console.log("");
   console.log("                    Baseline    With Docs    Delta");

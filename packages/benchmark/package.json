@@ -3,10 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/lib.js",
+  "exports": {
+    ".": "./dist/lib.js"
+  },
   "scripts": {
     "build": "tsc",
-    "run-bench": "node dist/runner.js",
+    "run-bench": "node dist/index.js",
     "report": "node dist/report.js"
   },
   "dependencies": {

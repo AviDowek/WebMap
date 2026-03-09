@@ -1,6 +1,6 @@
 /**
  * Site crawler using Crawlee + Playwright.
- * Discovers all pages, extracts accessibility trees, and captures screenshots.
+ * Discovers all pages and extracts accessibility trees.
  */
 
 import { PlaywrightCrawler, type PlaywrightCrawlingContext } from "crawlee";
@@ -13,16 +13,6 @@ export interface CrawlResult {
   skippedUrls: string[];
   /** Total crawl duration in ms */
   durationMs: number;
-}
-
-interface RawPageData {
-  url: string;
-  title: string;
-  accessibilitySnapshot: string;
-  elements: InteractiveElement[];
-  forms: PageForm[];
-  screenshotBuffer?: Buffer;
-  links: string[];
 }
 
 /**
@@ -218,7 +208,6 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
     url,
     maxDepth = 3,
     maxPages = 50,
-    screenshots = true,
     pageTimeout = 30000,
   } = options;
 
@@ -236,6 +225,23 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
     maxConcurrency: 3,
     requestHandlerTimeoutSecs: pageTimeout / 1000,
     headless: true,
+    navigationTimeoutSecs: 30,
+    browserPoolOptions: {
+      maxOpenPagesPerBrowser: 3,
+      retireBrowserAfterPageCount: 20,
+      operationTimeoutSecs: 60,
+    },
+    launchContext: {
+      launchOptions: {
+        args: [
+          "--disable-gpu",
+          "--no-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-setuid-sandbox",
+        ],
+        timeout: 30000,
+      },
+    },
 
     async requestHandler({ request, page, enqueueLinks, log }: PlaywrightCrawlingContext) {
       const currentUrl = request.loadedUrl || request.url;
@@ -263,27 +269,16 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
       // Extract forms
       const forms = await extractForms(page);
 
-      // Take screenshot if requested
-      let screenshotPath: string | undefined;
-      if (screenshots) {
-        const screenshotBuffer = await page.screenshot({ fullPage: true });
-        // Save path will be determined by the doc generator
-        screenshotPath = `screenshots/${encodeURIComponent(currentUrl)}.png`;
-        // Store the buffer for later saving
-        (page as any).__screenshotBuffer = screenshotBuffer;
-      }
-
-      // Build page data (purpose and howToReach will be filled by LLM later)
+      // Build page data (purpose, howToReach, dynamicBehavior filled by LLM later)
       const pageData: PageData = {
         url: currentUrl,
         title,
-        purpose: "", // To be filled by LLM
-        howToReach: "", // To be filled by LLM
+        purpose: "",
+        howToReach: "",
         elements,
         forms,
-        dynamicBehavior: [], // To be filled by LLM
+        dynamicBehavior: [],
         accessibilitySnapshot,
-        screenshotPath,
       };
 
       pages.push(pageData);

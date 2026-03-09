@@ -6,3 +6,5 @@ dist/
 .env.local
 generated/
 .next/
+storage/
+benchmark-results/

@@ -95,12 +95,10 @@ function formatPage(page: PageData): string {
     sections.push("");
     sections.push("| Element | Type | Selector | Action | Result |");
     sections.push("|---------|------|----------|--------|--------|");
+    const esc = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ").replace(/`/g, "'");
     for (const el of page.elements) {
-      const escapedName = el.name.replace(/\|/g, "\\|");
-      const escapedSelector = el.selector.replace(/\|/g, "\\|");
-      const escapedResult = el.result.replace(/\|/g, "\\|");
       sections.push(
-        `| ${escapedName} | ${el.type} | \`${escapedSelector}\` | ${el.action} | ${escapedResult} |`
+        `| ${esc(el.name)} | ${el.type} | \`${esc(el.selector)}\` | ${el.action} | ${esc(el.result)} |`
       );
     }
     sections.push("");
@@ -115,11 +113,10 @@ function formatPage(page: PageData): string {
       sections.push("");
       sections.push("| Field | Type | Selector | Required |");
       sections.push("|-------|------|----------|----------|");
+      const escF = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ").replace(/`/g, "'");
       for (const field of form.fields) {
-        const escapedLabel = field.label.replace(/\|/g, "\\|");
-        const escapedSelector = field.selector.replace(/\|/g, "\\|");
         sections.push(
-          `| ${escapedLabel} | ${field.inputType} | \`${escapedSelector}\` | ${field.required ? "Yes" : "No"} |`
+          `| ${escF(field.label)} | ${field.inputType} | \`${escF(field.selector)}\` | ${field.required ? "Yes" : "No"} |`
         );
       }
       sections.push("");

@@ -7,14 +7,8 @@ export interface CrawlOptions {
   maxDepth?: number;
   /** Maximum pages to crawl (default: 50) */
   maxPages?: number;
-  /** Whether to take screenshots (default: true) */
-  screenshots?: boolean;
-  /** Whether to use vision model for unlabeled elements (default: false) */
-  useVision?: boolean;
   /** Timeout per page in ms (default: 30000) */
   pageTimeout?: number;
-  /** Respect robots.txt (default: true) */
-  respectRobotsTxt?: boolean;
 }
 
 export interface InteractiveElement {

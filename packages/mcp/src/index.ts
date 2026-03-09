@@ -10,7 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { webmap, formatAsMarkdown, type WebMapResult } from "@webmap/core";
+import { webmap, type WebMapResult } from "@webmap/core";
 
 // In-memory doc cache
 const docsCache = new Map<string, WebMapResult>();

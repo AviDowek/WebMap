@@ -1,0 +1,34 @@
+# ── Build stage ──────────────────────────────────────────────
+FROM node:22-slim AS builder
+
+WORKDIR /app
+
+COPY package.json package-lock.json turbo.json tsconfig.base.json ./
+COPY packages/core/package.json packages/core/
+COPY packages/web/package.json packages/web/
+
+RUN npm ci
+
+COPY packages/core/ packages/core/
+COPY packages/web/ packages/web/
+
+RUN npx turbo build --filter=@webmap/web
+
+# ── Production stage ────────────────────────────────────────
+FROM node:22-slim AS production
+
+WORKDIR /app
+
+COPY --from=builder /app/packages/web/.next packages/web/.next
+COPY --from=builder /app/packages/web/public packages/web/public
+COPY --from=builder /app/packages/web/package.json packages/web/
+COPY --from=builder /app/packages/web/next.config.ts packages/web/
+COPY --from=builder /app/node_modules node_modules
+COPY --from=builder /app/package.json .
+
+ENV NODE_ENV=production
+
+EXPOSE 3000
+
+WORKDIR /app/packages/web
+CMD ["npx", "next", "start", "--port", "3000"]

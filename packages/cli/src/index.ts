@@ -20,13 +20,10 @@ program
   .description("Generate AI agent documentation for any website")
   .version("0.1.0")
   .argument("<url>", "URL to crawl and document")
-  .option("-d, --depth <number>", "Maximum crawl depth", "3")
-  .option("-p, --max-pages <number>", "Maximum pages to crawl", "50")
+  .option("-d, --depth <number>", "Maximum crawl depth (1-5)", "3")
+  .option("-p, --max-pages <number>", "Maximum pages to crawl (1-100)", "50")
   .option("-o, --output <dir>", "Output directory", "./generated")
-  .option("--no-screenshots", "Skip taking screenshots")
-  .option("--vision", "Use vision model for unlabeled elements")
   .option("--model <model>", "Claude model for analysis", "claude-sonnet-4-20250514")
-  .option("--api-key <key>", "Anthropic API key (or set ANTHROPIC_API_KEY)")
   .action(async (url: string, opts) => {
     console.log("");
     console.log(
@@ -35,11 +32,11 @@ program
     );
     console.log("");
 
-    const apiKey = opts.apiKey || process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
       console.error(
         chalk.red(
-          "Error: Anthropic API key required. Set ANTHROPIC_API_KEY or use --api-key"
+          "Error: ANTHROPIC_API_KEY environment variable is required."
         )
       );
       process.exit(1);
@@ -47,11 +44,18 @@ program
 
     // Validate URL
     try {
-      new URL(url);
-    } catch {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("Only http/https URLs are allowed");
+      }
+    } catch (e) {
       console.error(chalk.red(`Error: Invalid URL: ${url}`));
       process.exit(1);
     }
+
+    // Validate numeric options
+    const maxDepth = Math.max(1, Math.min(5, parseInt(opts.depth, 10) || 3));
+    const maxPages = Math.max(1, Math.min(100, parseInt(opts.maxPages, 10) || 50));
 
     const domain = new URL(url).hostname;
     const spinner = ora(`Crawling ${chalk.bold(domain)}...`).start();
@@ -59,13 +63,10 @@ program
     try {
       const startTime = Date.now();
 
-      // Run WebMap
       const result = await webmap({
         url,
-        maxDepth: parseInt(opts.depth),
-        maxPages: parseInt(opts.maxPages),
-        screenshots: opts.screenshots !== false,
-        useVision: opts.vision || false,
+        maxDepth,
+        maxPages,
         apiKey,
         pageModel: opts.model,
         synthesisModel: opts.model,
