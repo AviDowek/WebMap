@@ -1,7 +1,7 @@
 # WebMap
 
-AI-powered website documentation generator for AI agents. WebMap crawls websites, extracts interactive elements and accessibility trees, and generates comprehensive markdown documentation that AI agents can use to navigate and operate websites.
-This is a WIP and more of an experiment currently, on the feasability of such an approach.
+-AI-powered website documentation generator for AI agents. WebMap crawls websites, extracts interactive elements and accessibility trees, and generates comprehensive markdown documentation that AI agents can use to navigate and operate websites.
+-This is a WIP and more of an experiment currently, on the feasability of such an approach.
 
 ## Features
 
