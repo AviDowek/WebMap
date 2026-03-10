@@ -54,6 +54,9 @@ interface BenchmarkStatus {
   phase?: string;
   tasksTotal?: number;
   tasksCompleted?: number;
+  multiMethod?: boolean;
+  currentSite?: string;
+  currentMethod?: string;
   result?: {
     summary: {
       baseline: BenchmarkMetrics;
@@ -81,7 +84,55 @@ interface BenchmarkStatus {
       error?: string;
     }>;
   };
+  multiResult?: MultiMethodResult;
   error?: string;
+}
+
+type DocMethod = "none" | "micro-guide" | "full-guide" | "first-message" | "pre-plan";
+
+const DOC_METHOD_LABELS: Record<DocMethod, string> = {
+  "none": "Baseline",
+  "micro-guide": "Micro Guide",
+  "full-guide": "Full Guide",
+  "first-message": "First Msg",
+  "pre-plan": "Pre-Plan",
+};
+
+const ALL_DOC_METHODS: DocMethod[] = ["none", "micro-guide", "full-guide", "first-message", "pre-plan"];
+
+interface MethodResultData {
+  method: DocMethod;
+  tasks: Array<{
+    taskId: string;
+    success: boolean;
+    steps: number;
+    tokensUsed: number;
+    durationMs: number;
+    error?: string;
+  }>;
+  metrics: BenchmarkMetrics;
+}
+
+interface SiteResultData {
+  domain: string;
+  url: string;
+  methods: MethodResultData[];
+}
+
+interface MultiMethodResult {
+  timestamp: string;
+  sites: SiteResultData[];
+  overall: MethodResultData[];
+  methods: DocMethod[];
+  totalTasks: number;
+}
+
+interface MultiMethodHistoryEntry {
+  id: string;
+  timestamp: string;
+  sites: number;
+  methods: DocMethod[];
+  totalTasks: number;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────
@@ -225,6 +276,8 @@ function GenerateTab() {
   const [status, setStatus] = useState<CrawlStatus>({ state: "idle" });
   const [cachedDocs, setCachedDocs] = useState<CachedDoc[]>([]);
   const [regenerating, setRegenerating] = useState<string | null>(null);
+  const [viewingDoc, setViewingDoc] = useState<string | null>(null);
+  const [viewingMarkdown, setViewingMarkdown] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -269,6 +322,24 @@ function GenerateTab() {
       alert("Failed to connect to API");
     } finally {
       setRegenerating(null);
+    }
+  }
+
+  async function viewDoc(domain: string) {
+    if (viewingDoc === domain) {
+      setViewingDoc(null);
+      setViewingMarkdown(null);
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/docs/${domain}`);
+      if (res.ok) {
+        const markdown = await res.text();
+        setViewingDoc(domain);
+        setViewingMarkdown(markdown);
+      }
+    } catch {
+      // ignore
     }
   }
 
@@ -475,81 +546,133 @@ function GenerateTab() {
       )}
 
       {/* Cached Docs */}
-      {cachedDocs.length > 0 && (
-        <div
-          style={{
-            backgroundColor: "#111",
-            border: "1px solid #222",
-            borderRadius: 8,
-            padding: 24,
-            marginTop: 32,
-          }}
-        >
-          <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>
-            Cached Documentation
+      <div
+        style={{
+          backgroundColor: "#111",
+          border: "1px solid #222",
+          borderRadius: 8,
+          padding: 24,
+          marginTop: 32,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>
+            Cached Documentation ({cachedDocs.length})
           </h3>
+          <button
+            onClick={loadCachedDocs}
+            style={{
+              ...btnStyle,
+              fontSize: 12,
+              padding: "4px 10px",
+              color: "#888",
+              border: "1px solid #333",
+            }}
+          >
+            Refresh
+          </button>
+        </div>
+        {cachedDocs.length === 0 ? (
+          <p style={{ color: "#555", fontSize: 14, textAlign: "center", padding: 16 }}>
+            No cached documentation yet. Generate docs for a URL above.
+          </p>
+        ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {cachedDocs.map((doc) => (
-              <div
-                key={doc.domain}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "10px 14px",
-                  backgroundColor: "#0a0a0a",
-                  borderRadius: 6,
-                  border: "1px solid #222",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                  <span style={{ fontWeight: 600, fontSize: 14 }}>{doc.domain}</span>
-                  <span style={{ color: "#666", fontSize: 12 }}>
-                    {doc.totalPages} pages
-                  </span>
-                  <span style={{ color: "#666", fontSize: 12 }}>
-                    {doc.totalElements} elements
-                  </span>
-                  <span style={{ color: "#666", fontSize: 12 }}>
-                    {doc.tokensUsed.toLocaleString()} tokens
-                  </span>
-                  <span style={{ color: "#555", fontSize: 12 }}>
-                    {new Date(doc.crawledAt).toLocaleDateString()}
-                  </span>
+              <div key={doc.domain}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "10px 14px",
+                    backgroundColor: "#0a0a0a",
+                    borderRadius: 6,
+                    border: "1px solid #222",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 600, fontSize: 14 }}>{doc.domain}</span>
+                    <span style={{ color: "#666", fontSize: 12 }}>
+                      {doc.totalPages} pages
+                    </span>
+                    <span style={{ color: "#666", fontSize: 12 }}>
+                      {doc.totalElements} elements
+                    </span>
+                    <span style={{ color: "#666", fontSize: 12 }}>
+                      {doc.tokensUsed.toLocaleString()} tokens
+                    </span>
+                    <span style={{ color: "#555", fontSize: 12 }}>
+                      {new Date(doc.crawledAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      onClick={() => viewDoc(doc.domain)}
+                      style={{
+                        ...btnStyle,
+                        fontSize: 12,
+                        padding: "4px 10px",
+                        backgroundColor: "#0a1a0a",
+                        color: "#22c55e",
+                        border: "1px solid #22c55e33",
+                      }}
+                    >
+                      View
+                    </button>
+                    <button
+                      onClick={() => regenerateDoc(doc.domain)}
+                      disabled={regenerating === doc.domain}
+                      style={{
+                        ...btnStyle,
+                        fontSize: 12,
+                        padding: "4px 10px",
+                        backgroundColor: "#1a1a2e",
+                        color: "#3b82f6",
+                        border: "1px solid #3b82f633",
+                      }}
+                    >
+                      {regenerating === doc.domain ? "Regenerating..." : "Regenerate"}
+                    </button>
+                    <button
+                      onClick={() => deleteDoc(doc.domain)}
+                      style={{
+                        ...btnStyle,
+                        fontSize: 12,
+                        padding: "4px 10px",
+                        color: "#ef4444",
+                        border: "1px solid #ef444433",
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button
-                    onClick={() => regenerateDoc(doc.domain)}
-                    disabled={regenerating === doc.domain}
+                {viewingDoc === doc.domain && viewingMarkdown && (
+                  <pre
                     style={{
-                      ...btnStyle,
+                      backgroundColor: "#0a0a0a",
+                      border: "1px solid #222",
+                      borderTop: "none",
+                      borderRadius: "0 0 6px 6px",
+                      padding: 16,
+                      overflow: "auto",
+                      maxHeight: "50vh",
                       fontSize: 12,
-                      padding: "4px 10px",
-                      backgroundColor: "#1a1a2e",
-                      color: "#3b82f6",
-                      border: "1px solid #3b82f633",
+                      lineHeight: 1.5,
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      margin: 0,
                     }}
                   >
-                    {regenerating === doc.domain ? "Regenerating..." : "Regenerate"}
-                  </button>
-                  <button
-                    onClick={() => deleteDoc(doc.domain)}
-                    style={{
-                      ...btnStyle,
-                      fontSize: 12,
-                      padding: "4px 10px",
-                      color: "#ef4444",
-                      border: "1px solid #ef444433",
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
+                    {viewingMarkdown}
+                  </pre>
+                )}
               </div>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 }
@@ -844,19 +967,27 @@ function BenchmarkTab() {
   const [sites, setSites] = useState<BenchmarkSite[]>([]);
   const [status, setStatus] = useState<BenchmarkStatus>({ state: "idle" });
   const [newSiteUrl, setNewSiteUrl] = useState("");
-  const [addingTask, setAddingTask] = useState<string | null>(null); // domain being edited
+  const [addingTask, setAddingTask] = useState<string | null>(null);
   const [taskForm, setTaskForm] = useState({ instruction: "", successCriteria: "", category: "navigation" });
-  const [generating, setGenerating] = useState<string | null>(null); // domain generating tasks for
+  const [generating, setGenerating] = useState<string | null>(null);
   const [siteLoading, setSiteLoading] = useState(false);
   const [history, setHistory] = useState<BenchmarkHistoryEntry[]>([]);
+  const [multiHistory, setMultiHistory] = useState<MultiMethodHistoryEntry[]>([]);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [expandedResult, setExpandedResult] = useState<BenchmarkStatus["result"] | null>(null);
+  const [expandedMultiResult, setExpandedMultiResult] = useState<MultiMethodResult | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load configured sites and history on mount
+  // Multi-method config
+  const [siteCount, setSiteCount] = useState(5);
+  const [tasksPerSite, setTasksPerSite] = useState(3);
+  const [selectedMethods, setSelectedMethods] = useState<DocMethod[]>([...ALL_DOC_METHODS]);
+  const [generatingSites, setGeneratingSites] = useState(false);
+
   useEffect(() => {
     loadSites();
     loadHistory();
+    loadMultiHistory();
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -869,9 +1000,7 @@ function BenchmarkTab() {
         const data = await res.json();
         setSites(data.sites || []);
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
   async function loadHistory() {
@@ -881,41 +1010,58 @@ function BenchmarkTab() {
         const data = await res.json();
         setHistory(data.runs || []);
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
-  async function deleteRun(runId: string) {
+  async function loadMultiHistory() {
     try {
-      await fetch(`${API_BASE}/api/benchmark/history/${runId}`, { method: "DELETE" });
-      setHistory((prev) => prev.filter((r) => r.id !== runId));
+      const res = await fetch(`${API_BASE}/api/benchmark/multi/history`);
+      if (res.ok) {
+        const data = await res.json();
+        setMultiHistory(data.runs || []);
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function deleteRun(runId: string, multi: boolean) {
+    const base = multi ? "multi/history" : "history";
+    try {
+      await fetch(`${API_BASE}/api/benchmark/${base}/${runId}`, { method: "DELETE" });
+      if (multi) {
+        setMultiHistory((prev) => prev.filter((r) => r.id !== runId));
+      } else {
+        setHistory((prev) => prev.filter((r) => r.id !== runId));
+      }
       if (expandedRun === runId) {
         setExpandedRun(null);
         setExpandedResult(null);
+        setExpandedMultiResult(null);
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
-  async function toggleExpandRun(runId: string) {
+  async function toggleExpandRun(runId: string, multi: boolean) {
     if (expandedRun === runId) {
       setExpandedRun(null);
       setExpandedResult(null);
+      setExpandedMultiResult(null);
       return;
     }
     setExpandedRun(runId);
     setExpandedResult(null);
+    setExpandedMultiResult(null);
+    const base = multi ? "multi/history" : "history";
     try {
-      const res = await fetch(`${API_BASE}/api/benchmark/history/${runId}`);
+      const res = await fetch(`${API_BASE}/api/benchmark/${base}/${runId}`);
       if (res.ok) {
         const data = await res.json();
-        setExpandedResult(data.result);
+        if (multi) {
+          setExpandedMultiResult(data.result);
+        } else {
+          setExpandedResult(data.result);
+        }
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
   async function addSite() {
@@ -945,9 +1091,7 @@ function BenchmarkTab() {
     try {
       await fetch(`${API_BASE}/api/benchmark/sites/${domain}`, { method: "DELETE" });
       await loadSites();
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
   async function addManualTask(domain: string) {
@@ -963,18 +1107,14 @@ function BenchmarkTab() {
         setTaskForm({ instruction: "", successCriteria: "", category: "navigation" });
         await loadSites();
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
   async function removeTask(domain: string, taskId: string) {
     try {
       await fetch(`${API_BASE}/api/benchmark/sites/${domain}/tasks/${taskId}`, { method: "DELETE" });
       await loadSites();
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
   async function generateTasks(url: string, domain: string) {
@@ -998,6 +1138,33 @@ function BenchmarkTab() {
     }
   }
 
+  async function generateSitesWithAI() {
+    setGeneratingSites(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/benchmark/sites/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ count: siteCount }),
+      });
+      if (res.ok) {
+        await loadSites();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Site generation failed");
+      }
+    } catch {
+      alert("Failed to connect to API");
+    } finally {
+      setGeneratingSites(false);
+    }
+  }
+
+  function toggleMethod(method: DocMethod) {
+    setSelectedMethods((prev) =>
+      prev.includes(method) ? prev.filter((m) => m !== method) : [...prev, method]
+    );
+  }
+
   async function handleRun(useConfigured: boolean) {
     if (pollRef.current) {
       clearInterval(pollRef.current);
@@ -1011,9 +1178,7 @@ function BenchmarkTab() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          useConfigured
-            ? { useConfiguredSites: true }
-            : { useSampleTasks: true }
+          useConfigured ? { useConfiguredSites: true } : { useSampleTasks: true }
         ),
       });
 
@@ -1024,61 +1189,7 @@ function BenchmarkTab() {
       }
 
       const data = await res.json();
-      const benchId = data.benchId;
-      setStatus({
-        state: "running",
-        benchId,
-        phase: "Generating documentation...",
-        tasksTotal: data.tasksTotal,
-        tasksCompleted: 0,
-      });
-
-      let attempts = 0;
-      pollRef.current = setInterval(async () => {
-        attempts++;
-        if (attempts > MAX_POLL_ATTEMPTS * 3) {
-          if (pollRef.current) clearInterval(pollRef.current);
-          pollRef.current = null;
-          setStatus((prev) => ({ ...prev, state: "error", error: "Benchmark timed out" }));
-          return;
-        }
-
-        try {
-          const statusRes = await fetch(`${API_BASE}/api/benchmark/status/${benchId}`);
-          if (!statusRes.ok) return;
-
-          const statusData = await statusRes.json();
-
-          if (statusData.status === "done") {
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            setStatus({ state: "done", benchId, result: statusData.result });
-            loadHistory();
-          } else if (statusData.status === "error") {
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            setStatus({ state: "error", error: statusData.error });
-          } else {
-            const phaseLabel =
-              statusData.status === "generating-docs"
-                ? "Generating documentation for test sites..."
-                : statusData.status === "running-baseline"
-                ? "Running CUA baseline (no docs)..."
-                : statusData.status === "running-with-docs"
-                ? "Running CUA with documentation..."
-                : "Processing...";
-
-            setStatus((prev) => ({
-              ...prev,
-              phase: phaseLabel,
-              tasksTotal: statusData.tasksTotal || prev.tasksTotal,
-              tasksCompleted: statusData.tasksCompleted ?? prev.tasksCompleted,
-            }));
-          }
-        } catch {
-          // Keep polling
-        }
-      }, 3000);
+      pollBenchmark(data.benchId, data.tasksTotal, false);
     } catch (error) {
       setStatus({
         state: "error",
@@ -1087,18 +1198,233 @@ function BenchmarkTab() {
     }
   }
 
+  async function handleMultiMethodRun(generateNewSites: boolean) {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+
+    if (selectedMethods.length === 0) {
+      alert("Select at least one method to test.");
+      return;
+    }
+
+    setStatus({ state: "running", phase: "Starting multi-method benchmark...", multiMethod: true });
+
+    try {
+      const res = await fetch(`${API_BASE}/api/benchmark/multi`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          methods: selectedMethods,
+          generateSites: generateNewSites,
+          useConfiguredSites: !generateNewSites,
+          siteCount: generateNewSites ? siteCount : undefined,
+          tasksPerSite,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        setStatus({ state: "error", error: err.error || `HTTP ${res.status}` });
+        return;
+      }
+
+      const data = await res.json();
+      pollBenchmark(data.benchId, 0, true);
+    } catch (error) {
+      setStatus({
+        state: "error",
+        error: error instanceof Error ? error.message : "Failed to connect to API",
+      });
+    }
+  }
+
+  function pollBenchmark(benchId: string, initialTotal: number, multi: boolean) {
+    setStatus({
+      state: "running",
+      benchId,
+      phase: "Starting...",
+      tasksTotal: initialTotal,
+      tasksCompleted: 0,
+      multiMethod: multi,
+    });
+
+    let attempts = 0;
+    pollRef.current = setInterval(async () => {
+      attempts++;
+      if (attempts > MAX_POLL_ATTEMPTS * 5) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        pollRef.current = null;
+        setStatus((prev) => ({ ...prev, state: "error", error: "Benchmark timed out" }));
+        return;
+      }
+
+      try {
+        const statusRes = await fetch(`${API_BASE}/api/benchmark/status/${benchId}`);
+        if (!statusRes.ok) return;
+
+        const d = await statusRes.json();
+
+        if (d.status === "done") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          if (d.multiResult) {
+            setStatus({ state: "done", benchId, multiMethod: true, multiResult: d.multiResult });
+            loadMultiHistory();
+          } else {
+            setStatus({ state: "done", benchId, result: d.result });
+            loadHistory();
+          }
+          loadSites();
+        } else if (d.status === "error") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          setStatus({ state: "error", error: d.error });
+        } else {
+          const phaseLabel = d.currentSite && d.currentMethod
+            ? `Testing ${d.currentSite} with ${DOC_METHOD_LABELS[d.currentMethod as DocMethod] || d.currentMethod}...`
+            : d.status === "generating-docs"
+            ? `Generating documentation${d.currentSite ? ` for ${d.currentSite}` : ""}...`
+            : d.status === "generating-tasks"
+            ? `Generating tasks${d.currentSite ? ` for ${d.currentSite}` : ""}...`
+            : d.status === "running-baseline"
+            ? "Running baseline (no docs)..."
+            : d.status === "running-with-docs"
+            ? "Running with documentation..."
+            : d.status === "running"
+            ? "Running benchmark..."
+            : "Processing...";
+
+          setStatus((prev) => ({
+            ...prev,
+            phase: phaseLabel,
+            tasksTotal: d.tasksTotal || prev.tasksTotal,
+            tasksCompleted: d.tasksCompleted ?? prev.tasksCompleted,
+            currentSite: d.currentSite,
+            currentMethod: d.currentMethod,
+          }));
+        }
+      } catch { /* Keep polling */ }
+    }, 3000);
+  }
+
   const totalConfiguredTasks = sites.reduce((sum, s) => sum + s.tasks.length, 0);
 
   return (
     <>
       <p style={{ textAlign: "center", color: "#666", marginBottom: 24, fontSize: 14 }}>
-        A/B benchmark using Claude CUA (Computer Use Agent). Compare AI agent
-        performance with and without WebMap documentation.
+        Multi-method benchmark using Claude CUA (Computer Use Agent). Compare different
+        documentation injection strategies across diverse websites.
       </p>
 
-      {/* Site Management */}
+      {/* Setup */}
       {status.state === "idle" && (
         <>
+          {/* Multi-Method Configuration */}
+          <div
+            style={{
+              backgroundColor: "#111",
+              border: "1px solid #222",
+              borderRadius: 8,
+              padding: 24,
+              marginBottom: 24,
+            }}
+          >
+            <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>
+              Multi-Method Benchmark
+            </h3>
+            <p style={{ color: "#888", fontSize: 13, marginBottom: 16 }}>
+              Test all doc injection methods simultaneously across multiple sites. AI generates a diverse site list, crawls and documents each site, then benchmarks every method.
+            </p>
+
+            {/* Method Selection */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 8 }}>
+                Methods to test:
+              </label>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {ALL_DOC_METHODS.map((method) => (
+                  <button
+                    key={method}
+                    onClick={() => toggleMethod(method)}
+                    style={{
+                      ...btnStyle,
+                      fontSize: 12,
+                      padding: "6px 12px",
+                      backgroundColor: selectedMethods.includes(method) ? "#1a2a4a" : "#1a1a1a",
+                      color: selectedMethods.includes(method) ? "#3b82f6" : "#888",
+                      border: selectedMethods.includes(method) ? "1px solid #3b82f6" : "1px solid #333",
+                    }}
+                  >
+                    {DOC_METHOD_LABELS[method]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Site Count & Tasks Per Site */}
+            <div style={{ display: "flex", gap: 24, marginBottom: 20 }}>
+              <div>
+                <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
+                  Number of sites:
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={siteCount}
+                  onChange={(e) => setSiteCount(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
+                  style={{ ...inputStyle, fontSize: 14, padding: "8px 12px", width: 80 }}
+                />
+              </div>
+              <div>
+                <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
+                  Tasks per site:
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={5}
+                  value={tasksPerSite}
+                  onChange={(e) => setTasksPerSite(Math.max(1, Math.min(5, parseInt(e.target.value) || 1)))}
+                  style={{ ...inputStyle, fontSize: 14, padding: "8px 12px", width: 80 }}
+                />
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-end" }}>
+                <span style={{ color: "#666", fontSize: 12, paddingBottom: 10 }}>
+                  Total runs: {siteCount * tasksPerSite * selectedMethods.length} ({siteCount} sites x {tasksPerSite} tasks x {selectedMethods.length} methods)
+                </span>
+              </div>
+            </div>
+
+            {/* Run Buttons */}
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <button
+                onClick={() => handleMultiMethodRun(true)}
+                style={{
+                  ...primaryBtn(false),
+                  fontSize: 14,
+                }}
+              >
+                Generate {siteCount} Sites & Run Benchmark
+              </button>
+              {sites.length > 0 && (
+                <button
+                  onClick={() => handleMultiMethodRun(false)}
+                  style={{
+                    ...primaryBtn(false),
+                    fontSize: 14,
+                    backgroundColor: "#333",
+                  }}
+                >
+                  Run on Configured Sites ({sites.length})
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Site Management */}
           <div
             style={{
               backgroundColor: "#111",
@@ -1113,7 +1439,7 @@ function BenchmarkTab() {
             </h3>
 
             {/* Add site form */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
               <input
                 type="text"
                 value={newSiteUrl}
@@ -1135,12 +1461,26 @@ function BenchmarkTab() {
               >
                 {siteLoading ? "Adding..." : "Add Site"}
               </button>
+              <button
+                onClick={generateSitesWithAI}
+                disabled={generatingSites}
+                style={{
+                  ...btnStyle,
+                  backgroundColor: "#1a1a2e",
+                  color: "#a855f7",
+                  border: "1px solid #a855f733",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {generatingSites ? "Generating..." : `AI Generate ${siteCount} Sites`}
+              </button>
             </div>
 
             {/* Sites list */}
             {sites.length === 0 ? (
               <p style={{ color: "#666", fontSize: 14, textAlign: "center", padding: 20 }}>
-                No sites configured. Add a site above, or run with sample tasks below.
+                No sites configured. Add manually or use AI to generate a diverse set.
               </p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1154,7 +1494,6 @@ function BenchmarkTab() {
                       padding: 16,
                     }}
                   >
-                    {/* Site header */}
                     <div
                       style={{
                         display: "flex",
@@ -1169,16 +1508,7 @@ function BenchmarkTab() {
                           {site.tasks.length} task{site.tasks.length !== 1 ? "s" : ""}
                         </span>
                         {site.hasDocumentation && (
-                          <span
-                            style={{
-                              color: "#22c55e",
-                              fontSize: 11,
-                              marginLeft: 8,
-                              border: "1px solid #22c55e33",
-                              padding: "2px 6px",
-                              borderRadius: 4,
-                            }}
-                          >
+                          <span style={{ color: "#22c55e", fontSize: 11, marginLeft: 8, border: "1px solid #22c55e33", padding: "2px 6px", borderRadius: 4 }}>
                             docs cached
                           </span>
                         )}
@@ -1187,45 +1517,25 @@ function BenchmarkTab() {
                         <button
                           onClick={() => generateTasks(site.url, site.domain)}
                           disabled={generating === site.domain}
-                          style={{
-                            ...btnStyle,
-                            fontSize: 12,
-                            padding: "4px 10px",
-                            backgroundColor: "#1a1a2e",
-                            color: "#a855f7",
-                            border: "1px solid #a855f733",
-                          }}
+                          style={{ ...btnStyle, fontSize: 12, padding: "4px 10px", backgroundColor: "#1a1a2e", color: "#a855f7", border: "1px solid #a855f733" }}
                         >
                           {generating === site.domain ? "Generating..." : "AI Generate Tasks"}
                         </button>
                         <button
-                          onClick={() =>
-                            setAddingTask(addingTask === site.domain ? null : site.domain)
-                          }
-                          style={{
-                            ...btnStyle,
-                            fontSize: 12,
-                            padding: "4px 10px",
-                          }}
+                          onClick={() => setAddingTask(addingTask === site.domain ? null : site.domain)}
+                          style={{ ...btnStyle, fontSize: 12, padding: "4px 10px" }}
                         >
                           + Task
                         </button>
                         <button
                           onClick={() => removeSite(site.domain)}
-                          style={{
-                            ...btnStyle,
-                            fontSize: 12,
-                            padding: "4px 10px",
-                            color: "#ef4444",
-                            border: "1px solid #ef444433",
-                          }}
+                          style={{ ...btnStyle, fontSize: 12, padding: "4px 10px", color: "#ef4444", border: "1px solid #ef444433" }}
                         >
                           Remove
                         </button>
                       </div>
                     </div>
 
-                    {/* Tasks list */}
                     {site.tasks.length > 0 && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {site.tasks.map((task) => (
@@ -1245,24 +1555,13 @@ function BenchmarkTab() {
                               <div style={{ color: "#ededed" }}>{task.instruction}</div>
                               <div style={{ color: "#666", fontSize: 12, marginTop: 2 }}>
                                 {task.category}
-                                {task.source === "ai-generated" && (
-                                  <span style={{ color: "#a855f7", marginLeft: 6 }}>AI</span>
-                                )}
-                                {task.source === "manual" && (
-                                  <span style={{ color: "#3b82f6", marginLeft: 6 }}>manual</span>
-                                )}
+                                {task.source === "ai-generated" && <span style={{ color: "#a855f7", marginLeft: 6 }}>AI</span>}
+                                {task.source === "manual" && <span style={{ color: "#3b82f6", marginLeft: 6 }}>manual</span>}
                               </div>
                             </div>
                             <button
                               onClick={() => removeTask(site.domain, task.id)}
-                              style={{
-                                background: "none",
-                                border: "none",
-                                color: "#666",
-                                cursor: "pointer",
-                                padding: "0 4px",
-                                fontSize: 16,
-                              }}
+                              style={{ background: "none", border: "none", color: "#666", cursor: "pointer", padding: "0 4px", fontSize: 16 }}
                             >
                               x
                             </button>
@@ -1271,83 +1570,20 @@ function BenchmarkTab() {
                       </div>
                     )}
 
-                    {/* Add task form */}
                     {addingTask === site.domain && (
-                      <div
-                        style={{
-                          marginTop: 12,
-                          padding: 12,
-                          backgroundColor: "#111",
-                          borderRadius: 4,
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 8,
-                        }}
-                      >
-                        <input
-                          type="text"
-                          placeholder="Task instruction (e.g., 'Find the search bar and search for AI')"
-                          value={taskForm.instruction}
-                          onChange={(e) =>
-                            setTaskForm({ ...taskForm, instruction: e.target.value })
-                          }
-                          style={{
-                            ...inputStyle,
-                            fontSize: 13,
-                            padding: "8px 12px",
-                          }}
-                        />
-                        <input
-                          type="text"
-                          placeholder="Success criteria (e.g., 'Search results page is displayed')"
-                          value={taskForm.successCriteria}
-                          onChange={(e) =>
-                            setTaskForm({ ...taskForm, successCriteria: e.target.value })
-                          }
-                          style={{
-                            ...inputStyle,
-                            fontSize: 13,
-                            padding: "8px 12px",
-                          }}
-                        />
+                      <div style={{ marginTop: 12, padding: 12, backgroundColor: "#111", borderRadius: 4, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <input type="text" placeholder="Task instruction" value={taskForm.instruction} onChange={(e) => setTaskForm({ ...taskForm, instruction: e.target.value })} style={{ ...inputStyle, fontSize: 13, padding: "8px 12px" }} />
+                        <input type="text" placeholder="Success criteria" value={taskForm.successCriteria} onChange={(e) => setTaskForm({ ...taskForm, successCriteria: e.target.value })} style={{ ...inputStyle, fontSize: 13, padding: "8px 12px" }} />
                         <div style={{ display: "flex", gap: 8 }}>
-                          <select
-                            value={taskForm.category}
-                            onChange={(e) =>
-                              setTaskForm({ ...taskForm, category: e.target.value })
-                            }
-                            style={{
-                              ...inputStyle,
-                              fontSize: 13,
-                              padding: "8px 12px",
-                              flex: "none",
-                              width: 180,
-                            }}
-                          >
+                          <select value={taskForm.category} onChange={(e) => setTaskForm({ ...taskForm, category: e.target.value })} style={{ ...inputStyle, fontSize: 13, padding: "8px 12px", flex: "none", width: 180 }}>
                             <option value="navigation">Navigation</option>
                             <option value="search">Search</option>
                             <option value="form-fill">Form Fill</option>
                             <option value="multi-step">Multi-step</option>
                             <option value="information-extraction">Info Extraction</option>
                           </select>
-                          <button
-                            onClick={() => addManualTask(site.domain)}
-                            style={{
-                              ...btnStyle,
-                              fontSize: 13,
-                              backgroundColor: "#3b82f6",
-                              border: "none",
-                              color: "#fff",
-                            }}
-                          >
-                            Add Task
-                          </button>
-                          <button
-                            onClick={() => setAddingTask(null)}
-                            style={{ ...btnStyle, fontSize: 13 }}
-                          >
-                            Cancel
-                          </button>
+                          <button onClick={() => addManualTask(site.domain)} style={{ ...btnStyle, fontSize: 13, backgroundColor: "#3b82f6", border: "none", color: "#fff" }}>Add Task</button>
+                          <button onClick={() => setAddingTask(null)} style={{ ...btnStyle, fontSize: 13 }}>Cancel</button>
                         </div>
                       </div>
                     )}
@@ -1357,137 +1593,102 @@ function BenchmarkTab() {
             )}
           </div>
 
-          {/* Run buttons */}
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              justifyContent: "center",
-              marginBottom: 32,
-              flexWrap: "wrap",
-            }}
-          >
+          {/* Legacy A/B Run buttons */}
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", marginBottom: 32, flexWrap: "wrap" }}>
             {totalConfiguredTasks > 0 && (
-              <button onClick={() => handleRun(true)} style={primaryBtn(false)}>
-                Run CUA Benchmark ({totalConfiguredTasks} tasks)
+              <button onClick={() => handleRun(true)} style={{ ...primaryBtn(false), backgroundColor: "#333", fontSize: 14 }}>
+                Run Legacy A/B Benchmark ({totalConfiguredTasks} tasks)
               </button>
             )}
-            <button
-              onClick={() => handleRun(false)}
-              style={{
-                ...primaryBtn(false),
-                backgroundColor: totalConfiguredTasks > 0 ? "#333" : "#3b82f6",
-              }}
-            >
-              Run with Sample Tasks
+            <button onClick={() => handleRun(false)} style={{ ...primaryBtn(false), backgroundColor: "#333", fontSize: 14 }}>
+              Run with Sample Tasks (Legacy)
             </button>
           </div>
 
-          {/* Previous Runs */}
+          {/* Previous Multi-Method Runs */}
+          {multiHistory.length > 0 && (
+            <div style={{ backgroundColor: "#111", border: "1px solid #222", borderRadius: 8, padding: 24, marginBottom: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>Previous Multi-Method Runs</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {multiHistory.map((run) => {
+                  const isExpanded = expandedRun === run.id;
+                  return (
+                    <div key={run.id} style={{ backgroundColor: "#0a0a0a", border: "1px solid #222", borderRadius: 6, overflow: "hidden" }}>
+                      <div
+                        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer" }}
+                        onClick={() => toggleExpandRun(run.id, true)}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                          <span style={{ color: "#888", fontSize: 12 }}>{new Date(run.timestamp).toLocaleString()}</span>
+                          <span style={{ fontSize: 13 }}>{run.sites} site{run.sites !== 1 ? "s" : ""}</span>
+                          <span style={{ fontSize: 12, color: "#aaa" }}>{run.totalTasks} total runs</span>
+                          <span style={{ fontSize: 12, color: "#3b82f6" }}>{run.methods.length} methods</span>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteRun(run.id, true); }}
+                            style={{ ...btnStyle, fontSize: 12, padding: "4px 10px", color: "#ef4444", border: "1px solid #ef444433" }}
+                          >
+                            Delete
+                          </button>
+                          <span style={{ color: "#555", fontSize: 14 }}>{isExpanded ? "\u25B2" : "\u25BC"}</span>
+                        </div>
+                      </div>
+                      {isExpanded && (
+                        <div style={{ padding: "0 16px 16px" }}>
+                          {expandedMultiResult ? (
+                            <MultiMethodResults result={expandedMultiResult} />
+                          ) : (
+                            <p style={{ color: "#666", fontSize: 13, textAlign: "center", padding: 12 }}>Loading details...</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Previous Legacy Runs */}
           {history.length > 0 && (
-            <div
-              style={{
-                backgroundColor: "#111",
-                border: "1px solid #222",
-                borderRadius: 8,
-                padding: 24,
-              }}
-            >
-              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>
-                Previous Runs
-              </h3>
+            <div style={{ backgroundColor: "#111", border: "1px solid #222", borderRadius: 8, padding: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>Previous A/B Runs (Legacy)</h3>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {history.map((run) => {
                   const isExpanded = expandedRun === run.id;
                   const successDelta = run.improvement?.successRateDelta;
                   const tokenReduction = run.improvement?.tokenReduction;
                   return (
-                    <div
-                      key={run.id}
-                      style={{
-                        backgroundColor: "#0a0a0a",
-                        border: "1px solid #222",
-                        borderRadius: 6,
-                        overflow: "hidden",
-                      }}
-                    >
+                    <div key={run.id} style={{ backgroundColor: "#0a0a0a", border: "1px solid #222", borderRadius: 6, overflow: "hidden" }}>
                       <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          padding: "12px 16px",
-                          cursor: "pointer",
-                        }}
-                        onClick={() => toggleExpandRun(run.id)}
+                        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer" }}
+                        onClick={() => toggleExpandRun(run.id, false)}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                          <span style={{ color: "#888", fontSize: 12 }}>
-                            {new Date(run.timestamp).toLocaleString()}
-                          </span>
-                          <span style={{ fontSize: 13 }}>
-                            {run.tasksTotal} task{run.tasksTotal !== 1 ? "s" : ""}
-                          </span>
-                          <span style={{ fontSize: 12, color: "#aaa" }}>
-                            {(run.successRateBaseline * 100).toFixed(0)}% baseline
-                          </span>
-                          <span style={{ fontSize: 12, color: "#aaa" }}>
-                            {(run.successRateWithDocs * 100).toFixed(0)}% w/ docs
-                          </span>
+                          <span style={{ color: "#888", fontSize: 12 }}>{new Date(run.timestamp).toLocaleString()}</span>
+                          <span style={{ fontSize: 13 }}>{run.tasksTotal} task{run.tasksTotal !== 1 ? "s" : ""}</span>
+                          <span style={{ fontSize: 12, color: "#aaa" }}>{(run.successRateBaseline * 100).toFixed(0)}% baseline</span>
+                          <span style={{ fontSize: 12, color: "#aaa" }}>{(run.successRateWithDocs * 100).toFixed(0)}% w/ docs</span>
                           {successDelta != null && (
-                            <span
-                              style={{
-                                fontSize: 12,
-                                color: successDelta > 0 ? "#22c55e" : successDelta < 0 ? "#ef4444" : "#888",
-                                fontWeight: 600,
-                              }}
-                            >
-                              {successDelta > 0 ? "+" : ""}
-                              {(successDelta * 100).toFixed(1)}pp
+                            <span style={{ fontSize: 12, color: successDelta > 0 ? "#22c55e" : successDelta < 0 ? "#ef4444" : "#888", fontWeight: 600 }}>
+                              {successDelta > 0 ? "+" : ""}{(successDelta * 100).toFixed(1)}pp
                             </span>
                           )}
                           {tokenReduction != null && (
-                            <span
-                              style={{
-                                fontSize: 12,
-                                color: tokenReduction > 0 ? "#22c55e" : "#ef4444",
-                              }}
-                            >
-                              {tokenReduction > 0 ? "-" : "+"}
-                              {Math.abs(tokenReduction).toFixed(0)}% tokens
+                            <span style={{ fontSize: 12, color: tokenReduction > 0 ? "#22c55e" : "#ef4444" }}>
+                              {tokenReduction > 0 ? "-" : "+"}{Math.abs(tokenReduction).toFixed(0)}% tokens
                             </span>
                           )}
                         </div>
                         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deleteRun(run.id);
-                            }}
-                            style={{
-                              ...btnStyle,
-                              fontSize: 12,
-                              padding: "4px 10px",
-                              color: "#ef4444",
-                              border: "1px solid #ef444433",
-                            }}
-                          >
-                            Delete
-                          </button>
-                          <span style={{ color: "#555", fontSize: 14 }}>
-                            {isExpanded ? "\u25B2" : "\u25BC"}
-                          </span>
+                          <button onClick={(e) => { e.stopPropagation(); deleteRun(run.id, false); }} style={{ ...btnStyle, fontSize: 12, padding: "4px 10px", color: "#ef4444", border: "1px solid #ef444433" }}>Delete</button>
+                          <span style={{ color: "#555", fontSize: 14 }}>{isExpanded ? "\u25B2" : "\u25BC"}</span>
                         </div>
                       </div>
                       {isExpanded && (
                         <div style={{ padding: "0 16px 16px" }}>
-                          {expandedResult ? (
-                            <BenchmarkResults result={expandedResult} />
-                          ) : (
-                            <p style={{ color: "#666", fontSize: 13, textAlign: "center", padding: 12 }}>
-                              Loading details...
-                            </p>
-                          )}
+                          {expandedResult ? <BenchmarkResults result={expandedResult} /> : <p style={{ color: "#666", fontSize: 13, textAlign: "center", padding: 12 }}>Loading details...</p>}
                         </div>
                       )}
                     </div>
@@ -1503,30 +1704,23 @@ function BenchmarkTab() {
       {status.state === "running" && (
         <div style={{ textAlign: "center", padding: 40 }}>
           <div style={{ fontSize: 24, color: "#3b82f6", marginBottom: 12 }}>
-            CUA Benchmark Running
+            {status.multiMethod ? "Multi-Method Benchmark Running" : "CUA Benchmark Running"}
           </div>
           <p style={{ color: "#888", marginBottom: 8 }}>{status.phase}</p>
+          {status.currentSite && (
+            <p style={{ color: "#aaa", fontSize: 13, marginBottom: 4 }}>Site: {status.currentSite}</p>
+          )}
           {status.tasksTotal != null && status.tasksTotal > 0 && (
             <p style={{ color: "#666", fontSize: 14 }}>
-              Tasks: {status.tasksCompleted || 0} / {status.tasksTotal}
+              Progress: {status.tasksCompleted || 0} / {status.tasksTotal} task runs
             </p>
           )}
-          <div
-            style={{
-              width: 200,
-              height: 4,
-              backgroundColor: "#333",
-              borderRadius: 2,
-              margin: "20px auto",
-              overflow: "hidden",
-            }}
-          >
+          <div style={{ width: 300, height: 4, backgroundColor: "#333", borderRadius: 2, margin: "20px auto", overflow: "hidden" }}>
             <div
               style={{
-                width:
-                  status.tasksTotal && status.tasksTotal > 0
-                    ? `${((status.tasksCompleted || 0) / (status.tasksTotal * 2)) * 100}%`
-                    : "10%",
+                width: status.tasksTotal && status.tasksTotal > 0
+                  ? `${((status.tasksCompleted || 0) / status.tasksTotal) * 100}%`
+                  : "5%",
                 height: "100%",
                 backgroundColor: "#3b82f6",
                 borderRadius: 2,
@@ -1535,7 +1729,7 @@ function BenchmarkTab() {
             />
           </div>
           <p style={{ color: "#555", fontSize: 12, marginTop: 16 }}>
-            Claude CUA is controlling a real browser with screenshots. This may take several minutes.
+            Claude CUA is controlling a real browser with screenshots. This may take a while.
           </p>
         </div>
       )}
@@ -1545,27 +1739,28 @@ function BenchmarkTab() {
         <>
           <ErrorBox error={status.error} />
           <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 16 }}>
-            <button onClick={() => setStatus({ state: "idle" })} style={btnStyle}>
-              Back to Setup
-            </button>
-            <button onClick={() => handleRun(totalConfiguredTasks > 0)} style={primaryBtn(false)}>
-              Retry
-            </button>
+            <button onClick={() => setStatus({ state: "idle" })} style={btnStyle}>Back to Setup</button>
           </div>
         </>
       )}
 
-      {/* Results */}
-      {status.state === "done" && status.result && (
+      {/* Multi-Method Results */}
+      {status.state === "done" && status.multiResult && (
+        <div>
+          <MultiMethodResults result={status.multiResult} />
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 24 }}>
+            <button onClick={() => setStatus({ state: "idle" })} style={btnStyle}>Back to Setup</button>
+          </div>
+        </div>
+      )}
+
+      {/* Legacy Results */}
+      {status.state === "done" && status.result && !status.multiResult && (
         <div>
           <BenchmarkResults result={status.result} />
           <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 24 }}>
-            <button onClick={() => setStatus({ state: "idle" })} style={btnStyle}>
-              Back to Setup
-            </button>
-            <button onClick={() => handleRun(totalConfiguredTasks > 0)} style={primaryBtn(false)}>
-              Run Again
-            </button>
+            <button onClick={() => setStatus({ state: "idle" })} style={btnStyle}>Back to Setup</button>
+            <button onClick={() => handleRun(totalConfiguredTasks > 0)} style={primaryBtn(false)}>Run Again</button>
           </div>
         </div>
       )}
@@ -1573,7 +1768,218 @@ function BenchmarkTab() {
   );
 }
 
-// ─── Benchmark Results Component ─────────────────────────────────────
+// ─── Multi-Method Results Component ──────────────────────────────────
+
+const METHOD_COLORS: Record<DocMethod, string> = {
+  "none": "#888",
+  "micro-guide": "#3b82f6",
+  "full-guide": "#8b5cf6",
+  "first-message": "#f59e0b",
+  "pre-plan": "#22c55e",
+};
+
+function MultiMethodResults({ result }: { result: MultiMethodResult }) {
+  const [expandedSite, setExpandedSite] = useState<string | null>(null);
+
+  const baselineOverall = result.overall.find((m) => m.method === "none");
+
+  return (
+    <>
+      {/* Overall Method Comparison */}
+      <div style={{ backgroundColor: "#111", border: "1px solid #222", borderRadius: 8, padding: 24, marginBottom: 24 }}>
+        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16, textAlign: "center" }}>
+          Overall Method Comparison
+        </h3>
+        <p style={{ color: "#888", fontSize: 12, textAlign: "center", marginBottom: 16 }}>
+          {result.sites.length} site{result.sites.length !== 1 ? "s" : ""} &middot; {result.totalTasks} total task runs &middot; {result.methods.length} methods
+        </p>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid #333", color: "#888" }}>
+              <th style={{ textAlign: "left", padding: "10px 12px" }}>Method</th>
+              <th style={{ textAlign: "center", padding: "10px 12px" }}>Success Rate</th>
+              <th style={{ textAlign: "center", padding: "10px 12px" }}>Avg Tokens</th>
+              <th style={{ textAlign: "center", padding: "10px 12px" }}>Avg Duration</th>
+              <th style={{ textAlign: "center", padding: "10px 12px" }}>Avg Steps</th>
+              {baselineOverall && <th style={{ textAlign: "center", padding: "10px 12px" }}>vs Baseline</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {result.overall.map((mr, i) => {
+              const successDelta = baselineOverall && mr.method !== "none"
+                ? mr.metrics.successRate - baselineOverall.metrics.successRate
+                : null;
+              const tokenDelta = baselineOverall && mr.method !== "none" && baselineOverall.metrics.avgTokensPerTask > 0
+                ? ((mr.metrics.avgTokensPerTask - baselineOverall.metrics.avgTokensPerTask) / baselineOverall.metrics.avgTokensPerTask) * 100
+                : null;
+
+              return (
+                <tr key={mr.method} style={{ borderBottom: "1px solid #222", backgroundColor: i % 2 === 0 ? "transparent" : "#0a0a0a" }}>
+                  <td style={{ padding: "10px 12px", fontWeight: 600 }}>
+                    <span style={{ color: METHOD_COLORS[mr.method] || "#aaa" }}>
+                      {DOC_METHOD_LABELS[mr.method]}
+                    </span>
+                  </td>
+                  <td style={{ textAlign: "center", padding: "10px 12px" }}>
+                    {(mr.metrics.successRate * 100).toFixed(1)}%
+                  </td>
+                  <td style={{ textAlign: "center", padding: "10px 12px" }}>
+                    {mr.metrics.avgTokensPerTask.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  </td>
+                  <td style={{ textAlign: "center", padding: "10px 12px" }}>
+                    {(mr.metrics.avgDurationMs / 1000).toFixed(1)}s
+                  </td>
+                  <td style={{ textAlign: "center", padding: "10px 12px" }}>
+                    {mr.metrics.avgSteps.toFixed(1)}
+                  </td>
+                  {baselineOverall && (
+                    <td style={{ textAlign: "center", padding: "10px 12px" }}>
+                      {mr.method === "none" ? (
+                        <span style={{ color: "#555" }}>--</span>
+                      ) : (
+                        <span>
+                          <span style={{ color: successDelta != null && successDelta > 0 ? "#22c55e" : successDelta != null && successDelta < 0 ? "#ef4444" : "#888", fontWeight: 600, marginRight: 8 }}>
+                            {successDelta != null ? `${successDelta > 0 ? "+" : ""}${(successDelta * 100).toFixed(1)}pp` : ""}
+                          </span>
+                          <span style={{ color: tokenDelta != null && tokenDelta < 0 ? "#22c55e" : tokenDelta != null && tokenDelta > 0 ? "#ef4444" : "#888", fontSize: 12 }}>
+                            {tokenDelta != null ? `${tokenDelta > 0 ? "+" : ""}${tokenDelta.toFixed(0)}% tokens` : ""}
+                          </span>
+                        </span>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Per-Site Breakdown */}
+      <div style={{ backgroundColor: "#111", border: "1px solid #222", borderRadius: 8, padding: 24, marginBottom: 24 }}>
+        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16, textAlign: "center" }}>
+          Per-Site Breakdown
+        </h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {result.sites.map((site) => {
+            const isExpanded = expandedSite === site.domain;
+            const baseline = site.methods.find((m) => m.method === "none");
+            const bestMethod = [...site.methods].sort(
+              (a, b) => b.metrics.successRate - a.metrics.successRate || a.metrics.avgTokensPerTask - b.metrics.avgTokensPerTask
+            )[0];
+
+            return (
+              <div key={site.domain} style={{ backgroundColor: "#0a0a0a", border: "1px solid #222", borderRadius: 6, overflow: "hidden" }}>
+                <div
+                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer" }}
+                  onClick={() => setExpandedSite(isExpanded ? null : site.domain)}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 600, fontSize: 14 }}>{site.domain}</span>
+                    {baseline && (
+                      <span style={{ fontSize: 12, color: "#888" }}>
+                        Baseline: {(baseline.metrics.successRate * 100).toFixed(0)}%
+                      </span>
+                    )}
+                    <span style={{ fontSize: 12, color: METHOD_COLORS[bestMethod.method] || "#aaa" }}>
+                      Best: {DOC_METHOD_LABELS[bestMethod.method]} ({(bestMethod.metrics.successRate * 100).toFixed(0)}%)
+                    </span>
+                  </div>
+                  <span style={{ color: "#555", fontSize: 14 }}>{isExpanded ? "\u25B2" : "\u25BC"}</span>
+                </div>
+
+                {isExpanded && (
+                  <div style={{ padding: "0 16px 16px" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid #333", color: "#888" }}>
+                          <th style={{ textAlign: "left", padding: "8px 10px" }}>Method</th>
+                          <th style={{ textAlign: "center", padding: "8px 10px" }}>Success</th>
+                          <th style={{ textAlign: "center", padding: "8px 10px" }}>Avg Tokens</th>
+                          <th style={{ textAlign: "center", padding: "8px 10px" }}>Avg Duration</th>
+                          <th style={{ textAlign: "center", padding: "8px 10px" }}>Avg Steps</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {site.methods.map((mr, j) => (
+                          <tr key={mr.method} style={{ borderBottom: "1px solid #222", backgroundColor: j % 2 === 0 ? "transparent" : "#111" }}>
+                            <td style={{ padding: "8px 10px" }}>
+                              <span style={{ color: METHOD_COLORS[mr.method] || "#aaa", fontWeight: 600 }}>
+                                {DOC_METHOD_LABELS[mr.method]}
+                              </span>
+                            </td>
+                            <td style={{ textAlign: "center", padding: "8px 10px" }}>
+                              <span style={{ color: mr.metrics.successRate >= 0.5 ? "#22c55e" : "#ef4444" }}>
+                                {(mr.metrics.successRate * 100).toFixed(0)}%
+                              </span>
+                              <span style={{ color: "#555", fontSize: 11, marginLeft: 4 }}>
+                                ({mr.tasks.filter((t) => t.success).length}/{mr.tasks.length})
+                              </span>
+                            </td>
+                            <td style={{ textAlign: "center", padding: "8px 10px", color: "#aaa" }}>
+                              {mr.metrics.avgTokensPerTask.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                            </td>
+                            <td style={{ textAlign: "center", padding: "8px 10px", color: "#aaa" }}>
+                              {(mr.metrics.avgDurationMs / 1000).toFixed(1)}s
+                            </td>
+                            <td style={{ textAlign: "center", padding: "8px 10px", color: "#aaa" }}>
+                              {mr.metrics.avgSteps.toFixed(1)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+
+                    {/* Per-task detail within site */}
+                    <div style={{ marginTop: 12 }}>
+                      <h4 style={{ fontSize: 13, fontWeight: 600, color: "#888", marginBottom: 8 }}>Task Details</h4>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid #333", color: "#666" }}>
+                            <th style={{ textAlign: "left", padding: "6px 8px" }}>Task</th>
+                            {site.methods.map((mr) => (
+                              <th key={mr.method} style={{ textAlign: "center", padding: "6px 8px", color: METHOD_COLORS[mr.method] }}>
+                                {DOC_METHOD_LABELS[mr.method]}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {site.methods[0]?.tasks.map((_, taskIdx) => (
+                            <tr key={taskIdx} style={{ borderBottom: "1px solid #222" }}>
+                              <td style={{ padding: "6px 8px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {site.methods[0].tasks[taskIdx].taskId}
+                              </td>
+                              {site.methods.map((mr) => {
+                                const task = mr.tasks[taskIdx];
+                                return (
+                                  <td key={mr.method} style={{ textAlign: "center", padding: "6px 8px" }}>
+                                    <span style={{ color: task?.success ? "#22c55e" : "#ef4444", fontWeight: 600, fontSize: 11 }}>
+                                      {task?.success ? "Pass" : "Fail"}
+                                    </span>
+                                    <span style={{ color: "#555", fontSize: 10, marginLeft: 4 }}>
+                                      {task ? `${(task.tokensUsed / 1000).toFixed(0)}K` : "--"}
+                                    </span>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── Benchmark Results Component (Legacy A/B) ───────────────────────
 
 function BenchmarkResults({ result }: { result: BenchmarkStatus["result"] }) {
   if (!result) return null;

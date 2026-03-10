@@ -10,7 +10,7 @@
 
 import { runBenchmark, printBenchmarkSummary } from "./runner.js";
 import { sampleTasks } from "./tasks/sample-tasks.js";
-import { webmap } from "@webmap/core";
+import { webmap, type SiteDocumentation } from "@webmap/core";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -21,7 +21,7 @@ async function main() {
   const tasks = sampleTasks;
 
   // First, generate documentation for all target domains
-  const docsMap = new Map<string, string>();
+  const docsMap = new Map<string, SiteDocumentation>();
   const domains = [...new Set(tasks.map((t) => new URL(t.url).hostname))];
 
   console.log(`Generating documentation for ${domains.length} domains...\n`);
@@ -34,8 +34,9 @@ async function main() {
         url: task.url,
         maxPages: 15,
         maxDepth: 2,
+        cuaMode: true,
       });
-      docsMap.set(domain, result.markdown);
+      docsMap.set(domain, result.documentation);
       console.log(
         `  ✓ ${domain}: ${result.documentation.metadata.totalPages} pages, ${result.documentation.metadata.totalElements} elements\n`
       );

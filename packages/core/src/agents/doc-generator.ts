@@ -25,6 +25,14 @@ Your documentation must be:
 
 Always use accessibility selectors (role=button, name="Submit") not CSS selectors.`;
 
+const CUA_SYSTEM_PROMPT = `You are a documentation generator for VISION-BASED browser automation agents. These agents see screenshots and click on coordinates — they do NOT use accessibility selectors.
+
+Your documentation should be a concise navigation guide:
+1. Describe the visual layout (where are navigation elements, sidebars, content areas?)
+2. Provide navigation strategy (how would a human visually find features?)
+3. Keep descriptions short — under 100 words per page.
+Do NOT catalog individual elements or provide selectors.`;
+
 interface GeneratorOptions {
   /** Anthropic API key */
   apiKey: string;
@@ -32,6 +40,8 @@ interface GeneratorOptions {
   pageModel?: string;
   /** Model for synthesis/workflows (default: claude-sonnet-4-20250514) */
   synthesisModel?: string;
+  /** Generate concise CUA-friendly docs instead of full element catalogs */
+  cuaMode?: boolean;
 }
 
 /** Safely extract text from an Anthropic API response */
@@ -67,12 +77,14 @@ export class DocGenerator {
   private client: Anthropic;
   private pageModel: string;
   private synthesisModel: string;
+  private cuaMode: boolean;
   private tokensUsed = 0;
 
   constructor(options: GeneratorOptions) {
     this.client = new Anthropic({ apiKey: options.apiKey });
     this.pageModel = options.pageModel || "claude-sonnet-4-20250514";
     this.synthesisModel = options.synthesisModel || "claude-sonnet-4-20250514";
+    this.cuaMode = options.cuaMode || false;
   }
 
   /**
@@ -92,8 +104,10 @@ export class DocGenerator {
     // Step 2: Build site map
     const siteMap = this.buildSiteMap(enrichedPages, rootUrl);
 
-    // Step 3: Detect workflows using LLM
-    const workflows = await this.detectWorkflows(enrichedPages, domain);
+    // Step 3: Detect workflows using LLM (skip in CUA mode — too verbose)
+    const workflows = this.cuaMode
+      ? []
+      : await this.detectWorkflows(enrichedPages, domain);
 
     // Step 4: Generate site description
     const description = await this.generateSiteDescription(
@@ -133,13 +147,61 @@ export class DocGenerator {
 
     for (let i = 0; i < pages.length; i += batchSize) {
       const batch = pages.slice(i, i + batchSize);
-      const results = await Promise.all(
-        batch.map((page) => this.enrichSinglePage(page, rootUrl, pageList))
-      );
+      const enrichFn = this.cuaMode
+        ? (page: PageData) => this.enrichPageCUA(page)
+        : (page: PageData) => this.enrichSinglePage(page, rootUrl, pageList);
+      const results = await Promise.all(batch.map(enrichFn));
       enriched.push(...results);
     }
 
     return enriched;
+  }
+
+  /**
+   * CUA-mode page enrichment: concise visual layout + navigation strategy.
+   * Produces ~100 tokens per page instead of ~500+ in standard mode.
+   */
+  private async enrichPageCUA(page: PageData): Promise<PageData> {
+    const prompt = `Analyze this web page for a VISION-BASED browser automation agent that sees screenshots and clicks coordinates.
+
+Page URL: ${page.url}
+Page Title: ${page.title}
+
+Accessibility Tree (for context):
+${page.accessibilitySnapshot?.substring(0, 6000) || "Not available"}
+
+Respond in this exact JSON format:
+{
+  "purpose": "One sentence: what this page does",
+  "visualLayout": "Describe the visual layout: where is the nav bar, sidebar, content area, search, etc. (2-3 sentences)",
+  "navigationStrategy": "How would a human visually navigate from this page to key features? (2-3 sentences)"
+}`;
+
+    try {
+      const response = await this.client.messages.create({
+        model: this.pageModel,
+        max_tokens: 500,
+        system: CUA_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: prompt }],
+      });
+
+      this.tokensUsed +=
+        (response.usage?.input_tokens || 0) +
+        (response.usage?.output_tokens || 0);
+
+      const text = extractText(response);
+      const data = safeParseJson(text);
+
+      if (data) {
+        page.purpose = sanitize(data.purpose) || page.title;
+        page.visualLayout = sanitize(data.visualLayout) || "";
+        page.navigationStrategy = sanitize(data.navigationStrategy) || "";
+      }
+    } catch {
+      page.purpose = page.title || "Unknown page";
+    }
+
+    return page;
   }
 
   private async enrichSinglePage(

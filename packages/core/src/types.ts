@@ -73,6 +73,12 @@ export interface PageData {
   accessibilitySnapshot?: string;
   /** Screenshot path (if captured) */
   screenshotPath?: string;
+  /** Base64-encoded annotated screenshot with numbered element overlays (CUA mode) */
+  annotatedScreenshot?: string;
+  /** Visual layout description for vision-based agents (CUA mode) */
+  visualLayout?: string;
+  /** Navigation strategy hints for vision-based agents (CUA mode) */
+  navigationStrategy?: string;
 }
 
 export interface WorkflowStep {

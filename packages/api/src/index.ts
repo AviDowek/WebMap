@@ -20,15 +20,21 @@ import {
   DocGenerator,
   formatAsMarkdown,
   type WebMapResult,
+  type SiteDocumentation,
 } from "@webmap/core";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   runBenchmark,
+  runMultiMethodBenchmark,
   sampleTasks,
   generateTasksForSite,
+  generateDiverseSites,
   createManualTask,
+  ALL_DOC_METHODS,
   type BenchmarkTask,
   type BenchmarkResult,
+  type DocMethod,
+  type MultiMethodBenchmarkResult,
 } from "@webmap/benchmark";
 import {
   isBlockedUrl,
@@ -836,16 +842,60 @@ app.post("/api/benchmark/tasks/generate", async (c) => {
   }
 });
 
+// AI-generate diverse sites for benchmark
+app.post("/api/benchmark/sites/generate", async (c) => {
+  const body = await c.req.json<{ count?: number }>().catch(() => ({}));
+
+  if (!ANTHROPIC_KEY) {
+    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  }
+
+  const opts = body as { count?: number };
+  const count = clampNumber(opts.count, 1, 20, 5);
+
+  try {
+    const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
+    const sites = await generateDiverseSites(client, count);
+
+    // Auto-add generated sites to benchmark pool
+    for (const site of sites) {
+      const domain = new URL(site.url).hostname;
+      if (!benchmarkSites.has(domain)) {
+        benchmarkSites.set(domain, {
+          url: site.url,
+          domain,
+          tasks: [],
+          hasDocumentation: false,
+          addedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    return c.json({ sites, addedCount: sites.length });
+  } catch (error) {
+    return c.json({
+      error: `Site generation failed: ${error instanceof Error ? error.message : error}`,
+    }, 500);
+  }
+});
+
 // ─── Benchmark Runs ──────────────────────────────────────────────────────────
 
 interface BenchmarkState {
   id: string;
-  status: "generating-docs" | "running-baseline" | "running-with-docs" | "done" | "error";
+  status: "generating-docs" | "generating-tasks" | "running-baseline" | "running-with-docs" | "running" | "done" | "error";
   phase?: string;
   result?: BenchmarkResult;
+  multiResult?: MultiMethodBenchmarkResult;
   error?: string;
   tasksTotal: number;
   tasksCompleted: number;
+  /** Whether this is a multi-method benchmark */
+  multiMethod?: boolean;
+  /** Current site being tested */
+  currentSite?: string;
+  /** Current method being tested */
+  currentMethod?: string;
 }
 
 const benchmarkJobs = new Map<string, BenchmarkState>();
@@ -903,25 +953,24 @@ app.post("/api/benchmark", async (c) => {
     const state = benchmarkJobs.get(benchId)!;
 
     try {
-      // Step 1: Generate docs for all target domains
-      const docsMap = new Map<string, string>();
+      // Step 1: Generate docs for all target domains (CUA mode for benchmarks)
+      const docsMap = new Map<string, SiteDocumentation>();
       const domains = [...new Set(tasks.map((t) => new URL(t.url).hostname))];
 
       for (const domain of domains) {
         const task = tasks.find((t) => new URL(t.url).hostname === domain)!;
         try {
-          const cached = getCached(domain);
-          if (cached) {
-            docsMap.set(domain, cached.markdown);
-            continue;
-          }
-
+          // Always generate fresh CUA-optimized docs for benchmarks.
+          // Cached docs may have been generated without cuaMode.
           const crawlResult = await crawlSite({
             url: task.url,
             maxPages: 15,
             maxDepth: 2,
           });
-          const generator = new DocGenerator({ apiKey: ANTHROPIC_KEY! });
+          const generator = new DocGenerator({
+            apiKey: ANTHROPIC_KEY!,
+            cuaMode: true,
+          });
           const documentation = await generator.generate(crawlResult, {
             url: task.url,
             maxPages: 15,
@@ -929,7 +978,7 @@ app.post("/api/benchmark", async (c) => {
           });
           const markdown = formatAsMarkdown(documentation);
           setCache(domain, { documentation, markdown });
-          docsMap.set(domain, markdown);
+          docsMap.set(domain, documentation);
         } catch {
           // Skip domain if crawl fails
         }
@@ -984,8 +1033,255 @@ app.get("/api/benchmark/status/:benchId", (c) => {
     tasksTotal: state.tasksTotal,
     tasksCompleted: state.tasksCompleted,
     result: state.result || null,
+    multiResult: state.multiResult || null,
+    multiMethod: state.multiMethod || false,
+    currentSite: state.currentSite || null,
+    currentMethod: state.currentMethod || null,
     error: state.error || null,
   });
+});
+
+// ─── Multi-Method Benchmark ──────────────────────────────────────────────────
+
+interface MultiMethodSavedRun {
+  id: string;
+  timestamp: string;
+  result: MultiMethodBenchmarkResult;
+}
+
+const multiMethodHistory: MultiMethodSavedRun[] = [];
+
+app.post("/api/benchmark/multi", async (c) => {
+  const body = await c.req.json<{
+    methods?: DocMethod[];
+    siteCount?: number;
+    generateSites?: boolean;
+    useConfiguredSites?: boolean;
+    tasksPerSite?: number;
+  }>().catch(() => ({}));
+
+  if (!ANTHROPIC_KEY) {
+    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  }
+
+  const opts = body as {
+    methods?: DocMethod[];
+    siteCount?: number;
+    generateSites?: boolean;
+    useConfiguredSites?: boolean;
+    tasksPerSite?: number;
+  };
+
+  const methods: DocMethod[] = opts.methods && opts.methods.length > 0
+    ? opts.methods.filter((m) => ALL_DOC_METHODS.includes(m))
+    : [...ALL_DOC_METHODS];
+
+  const tasksPerSite = clampNumber(opts.tasksPerSite, 1, 5, 3);
+
+  const benchId = randomUUID();
+  benchmarkJobs.set(benchId, {
+    id: benchId,
+    status: "generating-docs",
+    tasksTotal: 0,
+    tasksCompleted: 0,
+    multiMethod: true,
+  });
+
+  // Run in background
+  (async () => {
+    const state = benchmarkJobs.get(benchId)!;
+    const client = new Anthropic({ apiKey: ANTHROPIC_KEY! });
+
+    try {
+      // Step 1: Determine sites
+      let siteUrls: Array<{ url: string; domain: string }> = [];
+
+      if (opts.generateSites) {
+        state.phase = "Generating diverse site list with AI...";
+        const count = clampNumber(opts.siteCount, 1, 20, 5);
+        const generated = await generateDiverseSites(client, count);
+        siteUrls = generated.map((s) => ({
+          url: s.url,
+          domain: new URL(s.url).hostname,
+        }));
+
+        // Also add them to benchmark sites pool
+        for (const g of generated) {
+          const domain = new URL(g.url).hostname;
+          if (!benchmarkSites.has(domain)) {
+            benchmarkSites.set(domain, {
+              url: g.url,
+              domain,
+              tasks: [],
+              hasDocumentation: false,
+              addedAt: new Date().toISOString(),
+            });
+          }
+        }
+      } else if (opts.useConfiguredSites) {
+        for (const site of benchmarkSites.values()) {
+          siteUrls.push({ url: site.url, domain: site.domain });
+        }
+      }
+
+      if (siteUrls.length === 0) {
+        state.status = "error";
+        state.error = "No sites to benchmark. Generate sites or add them manually.";
+        return;
+      }
+
+      // Step 2: Generate docs for all sites (CUA mode)
+      state.status = "generating-docs";
+      state.phase = "Crawling sites and generating CUA documentation...";
+      const docsMap = new Map<string, SiteDocumentation>();
+
+      for (const { url, domain } of siteUrls) {
+        state.currentSite = domain;
+        try {
+          const crawlResult = await crawlSite({
+            url,
+            maxPages: 15,
+            maxDepth: 2,
+          });
+          const generator = new DocGenerator({
+            apiKey: ANTHROPIC_KEY!,
+            cuaMode: true,
+          });
+          const documentation = await generator.generate(crawlResult, {
+            url,
+            maxPages: 15,
+            maxDepth: 2,
+          });
+          const markdown = formatAsMarkdown(documentation);
+          setCache(domain, { documentation, markdown });
+          docsMap.set(domain, documentation);
+
+          // Update benchmark site config
+          const siteConfig = benchmarkSites.get(domain);
+          if (siteConfig) siteConfig.hasDocumentation = true;
+        } catch (e) {
+          console.error(`Failed to crawl ${domain}: ${e}`);
+          // Skip this site
+        }
+      }
+
+      // Filter to only sites we have docs for
+      const successfulSites = siteUrls.filter((s) => docsMap.has(s.domain));
+      if (successfulSites.length === 0) {
+        state.status = "error";
+        state.error = "Failed to generate docs for any site.";
+        return;
+      }
+
+      // Step 3: Generate tasks for sites that don't have them
+      state.status = "generating-tasks" as BenchmarkState["status"];
+      state.phase = "Generating benchmark tasks with AI...";
+      const siteTasks = new Map<string, { url: string; tasks: BenchmarkTask[] }>();
+
+      for (const { url, domain } of successfulSites) {
+        state.currentSite = domain;
+        const siteConfig = benchmarkSites.get(domain);
+        let tasks = siteConfig?.tasks || [];
+
+        // Generate tasks if site has none
+        if (tasks.length === 0) {
+          try {
+            const docs = docsMap.get(domain)!;
+            const markdown = formatAsMarkdown(docs);
+            const generated = await generateTasksForSite(client, url, markdown, tasksPerSite);
+            tasks = generated;
+
+            // Save to site config
+            if (siteConfig) {
+              siteConfig.tasks = generated;
+            }
+          } catch (e) {
+            console.error(`Failed to generate tasks for ${domain}: ${e}`);
+            continue;
+          }
+        }
+
+        if (tasks.length > 0) {
+          siteTasks.set(domain, { url, tasks });
+        }
+      }
+
+      if (siteTasks.size === 0) {
+        state.status = "error";
+        state.error = "Failed to generate tasks for any site.";
+        return;
+      }
+
+      // Step 4: Run multi-method benchmark
+      state.status = "running";
+      const totalTasks = [...siteTasks.values()].reduce(
+        (sum, s) => sum + s.tasks.length * methods.length, 0
+      );
+      state.tasksTotal = totalTasks;
+
+      const result = await runMultiMethodBenchmark(siteTasks, docsMap, {
+        apiKey: ANTHROPIC_KEY,
+        methods,
+        onProgress: (update) => {
+          state.phase = update.phase;
+          state.currentSite = update.site;
+          state.currentMethod = update.method;
+          state.tasksCompleted = update.tasksCompleted;
+          state.tasksTotal = update.tasksTotal;
+        },
+      });
+
+      state.status = "done";
+      state.multiResult = result;
+
+      // Save to history
+      if (multiMethodHistory.length >= MAX_HISTORY) {
+        multiMethodHistory.shift();
+      }
+      multiMethodHistory.push({
+        id: benchId,
+        timestamp: result.timestamp,
+        result,
+      });
+    } catch (error) {
+      state.status = "error";
+      state.error = error instanceof Error ? error.message : String(error);
+    }
+  })();
+
+  return c.json({ benchId, status: "started", multiMethod: true });
+});
+
+// Multi-method benchmark history
+app.get("/api/benchmark/multi/history", (c) => {
+  return c.json({
+    runs: multiMethodHistory.map((r) => ({
+      id: r.id,
+      timestamp: r.timestamp,
+      sites: r.result.sites.length,
+      methods: r.result.methods,
+      totalTasks: r.result.totalTasks,
+    })),
+  });
+});
+
+app.get("/api/benchmark/multi/history/:runId", (c) => {
+  const runId = c.req.param("runId");
+  const run = multiMethodHistory.find((r) => r.id === runId);
+  if (!run) {
+    return c.json({ error: "Run not found" }, 404);
+  }
+  return c.json(run);
+});
+
+app.delete("/api/benchmark/multi/history/:runId", (c) => {
+  const runId = c.req.param("runId");
+  const idx = multiMethodHistory.findIndex((r) => r.id === runId);
+  if (idx === -1) {
+    return c.json({ error: "Run not found" }, 404);
+  }
+  multiMethodHistory.splice(idx, 1);
+  return c.json({ ok: true });
 });
 
 // URL-prefix proxy: GET /https://example.com → returns markdown docs

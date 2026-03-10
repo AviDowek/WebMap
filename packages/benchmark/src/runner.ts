@@ -13,6 +13,7 @@ import type {
   BetaContentBlockParam,
 } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { chromium, type Browser, type Page } from "playwright";
+import type { SiteDocumentation } from "@webmap/core";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -72,6 +73,55 @@ export interface AggregateMetrics {
   avgTokensPerTask: number;
   avgDurationMs: number;
   avgSteps: number;
+}
+
+// ─── Multi-Method Types ─────────────────────────────────────────────
+
+/** Doc injection methods to compare in benchmarks */
+export type DocMethod =
+  | "none"           // Baseline — no documentation
+  | "micro-guide"    // ~100 token guide in system prompt
+  | "full-guide"     // ~400 token guide with layout/nav/sitemap in system prompt
+  | "first-message"  // Docs injected in first user message (doesn't compound)
+  | "pre-plan";      // Use docs to generate task-specific plan before CUA starts
+
+export const ALL_DOC_METHODS: DocMethod[] = [
+  "none",
+  "micro-guide",
+  "full-guide",
+  "first-message",
+  "pre-plan",
+];
+
+export const DOC_METHOD_LABELS: Record<DocMethod, string> = {
+  "none": "Baseline (no docs)",
+  "micro-guide": "Micro Guide (~100 tokens, system prompt)",
+  "full-guide": "Full Guide (~400 tokens, system prompt)",
+  "first-message": "First Message Injection (no compounding)",
+  "pre-plan": "Pre-Plan (task-specific plan from docs)",
+};
+
+export interface MethodResult {
+  method: DocMethod;
+  tasks: TaskResult[];
+  metrics: AggregateMetrics;
+}
+
+export interface SiteResult {
+  domain: string;
+  url: string;
+  methods: MethodResult[];
+}
+
+export interface MultiMethodBenchmarkResult {
+  timestamp: string;
+  sites: SiteResult[];
+  /** Overall metrics per method across all sites */
+  overall: MethodResult[];
+  /** Which methods were tested */
+  methods: DocMethod[];
+  /** Total tasks across all sites */
+  totalTasks: number;
 }
 
 // ─── CUA Constants ───────────────────────────────────────────────────
@@ -157,6 +207,148 @@ export function formatDocsForCUA(markdown: string): string {
   }
 
   return deduped.join("\n").trim();
+}
+
+// ─── Micro Guide (ultra-compact, ~100 tokens) ───────────────────────
+
+/**
+ * Build an ultra-minimal site guide for CUA agents (~100 tokens / ~400 chars).
+ * Minimizes system prompt overhead that compounds over 18+ step conversations.
+ * Only includes: domain, one-line description, one-line nav hint from homepage.
+ */
+export function formatMicroGuide(doc: SiteDocumentation): string {
+  const lines: string[] = [];
+
+  lines.push(`SITE: ${doc.domain}`);
+  if (doc.description) {
+    // Truncate description to first sentence
+    const firstSentence = doc.description.split(/\.\s/)[0];
+    lines.push(firstSentence.endsWith(".") ? firstSentence : firstSentence + ".");
+  }
+
+  // One-line nav hint from homepage visual layout
+  const homePage = doc.pages.find((p) => {
+    try {
+      const pathname = new URL(p.url).pathname;
+      return pathname === "/" || pathname === "";
+    } catch { return false; }
+  }) || doc.pages[0];
+
+  if (homePage?.visualLayout && homePage.visualLayout.trim()) {
+    // Take just the first sentence of visual layout
+    const navHint = homePage.visualLayout.split(/\.\s/)[0];
+    lines.push(`NAV: ${navHint.endsWith(".") ? navHint : navHint + "."}`);
+  }
+
+  return lines.join("\n").trim();
+}
+
+// Keep formatCompactCUAGuide as a re-export of formatMicroGuide for backward compat
+export const formatCompactCUAGuide = formatMicroGuide as (
+  doc: SiteDocumentation,
+  task?: { instruction: string; category: string }
+) => string;
+
+// ─── Full Guide (~400 tokens with layout/nav/sitemap) ───────────────
+
+/**
+ * Build a compact but comprehensive CUA guide (~400 tokens).
+ * Includes layout description, navigation strategy, and site map.
+ */
+export function formatFullGuide(doc: SiteDocumentation): string {
+  const lines: string[] = [];
+
+  lines.push(`SITE: ${doc.domain}`);
+  if (doc.description) {
+    const firstSentence = doc.description.split(/\.\s/)[0];
+    lines.push(firstSentence.endsWith(".") ? firstSentence : firstSentence + ".");
+  }
+
+  // Homepage layout
+  const homePage = doc.pages.find((p) => {
+    try {
+      const pathname = new URL(p.url).pathname;
+      return pathname === "/" || pathname === "";
+    } catch { return false; }
+  }) || doc.pages[0];
+
+  if (homePage?.visualLayout && homePage.visualLayout.trim()) {
+    lines.push(`\nLAYOUT: ${homePage.visualLayout.trim()}`);
+  }
+
+  if (homePage?.navigationStrategy && homePage.navigationStrategy.trim()) {
+    lines.push(`\nNAVIGATION: ${homePage.navigationStrategy.trim()}`);
+  }
+
+  // Compact site map (top-level pages only)
+  const siteMapLines: string[] = [];
+  for (const page of doc.pages.slice(0, 8)) {
+    try {
+      const pathname = new URL(page.url).pathname;
+      const purpose = page.purpose ? ` — ${page.purpose.split(/\.\s/)[0]}` : "";
+      siteMapLines.push(`  ${pathname}${purpose}`);
+    } catch { /* skip */ }
+  }
+  if (siteMapLines.length > 0) {
+    lines.push(`\nSITE MAP:\n${siteMapLines.join("\n")}`);
+  }
+
+  return lines.join("\n").trim();
+}
+
+// ─── First-Message Doc Formatter ────────────────────────────────────
+
+/**
+ * Format docs for injection in the first user message.
+ * Since this doesn't compound (only sent once), we can be more generous.
+ */
+function formatFirstMessageDocs(doc: SiteDocumentation): string {
+  const lines: string[] = [];
+
+  lines.push(`--- SITE DOCUMENTATION: ${doc.domain} ---`);
+  if (doc.description) lines.push(doc.description);
+
+  for (const page of doc.pages.slice(0, 10)) {
+    try {
+      const pathname = new URL(page.url).pathname;
+      lines.push(`\n[${pathname}]`);
+      if (page.purpose) lines.push(`Purpose: ${page.purpose}`);
+      if (page.visualLayout) lines.push(`Layout: ${page.visualLayout}`);
+      if (page.navigationStrategy) lines.push(`Nav: ${page.navigationStrategy}`);
+    } catch { /* skip */ }
+  }
+
+  lines.push("--- END DOCUMENTATION ---");
+  return lines.join("\n");
+}
+
+// ─── Pre-Plan Generator ─────────────────────────────────────────────
+
+/**
+ * Use Claude to generate a task-specific plan from the documentation
+ * before the CUA agent starts. This is a separate, cheap API call.
+ */
+async function generatePrePlan(
+  client: Anthropic,
+  task: BenchmarkTask,
+  doc: SiteDocumentation
+): Promise<string> {
+  const fullGuide = formatFullGuide(doc);
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 300,
+    system: "You are a planning assistant. Given a website guide and a task, produce a concise step-by-step plan (max 5 steps) for a vision-based browser agent to complete the task. Each step should describe what to look for visually and what action to take. Be specific but brief.",
+    messages: [
+      {
+        role: "user",
+        content: `SITE GUIDE:\n${fullGuide}\n\nTASK: ${task.instruction}\nSUCCESS CRITERIA: ${task.successCriteria}\n\nProduce a concise action plan:`,
+      },
+    ],
+  });
+
+  const text = response.content[0].type === "text" ? response.content[0].text : "";
+  return text.trim();
 }
 
 // ─── Key mapping ─────────────────────────────────────────────────────
@@ -311,7 +503,9 @@ async function runTask(
   client: Anthropic,
   browser: Browser,
   task: BenchmarkTask,
-  documentation?: string
+  documentation?: SiteDocumentation,
+  method: DocMethod = "none",
+  prePlan?: string
 ): Promise<TaskResult> {
   const startTime = Date.now();
   const actions: string[] = [];
@@ -333,36 +527,53 @@ async function runTask(
     const baseInstructions = `When you have completed the task, respond with a text message containing "TASK_COMPLETE" and a brief summary.
 If you cannot complete the task, respond with "TASK_FAILED" and the reason.`;
 
-    const systemPrompt = documentation
-      ? `You are a browser automation agent completing tasks on websites.
-You have a site guide for this website. Use it to understand the site structure and navigate efficiently — it tells you WHAT pages exist, WHERE to find features, and WHAT workflows are available. You still need to use the screenshots to visually locate and click on elements.
-
-SITE GUIDE:
-${formatDocsForCUA(documentation)}
-
-${baseInstructions}`
-      : `You are a browser automation agent completing tasks on websites.
+    // Build system prompt based on method
+    let systemPrompt = `You are a browser automation agent completing tasks on websites.
 Analyze the screenshots to understand the page and interact with elements to complete the given task.
 
-${baseInstructions}`;
+`;
+
+    if (method === "micro-guide" && documentation) {
+      systemPrompt += formatMicroGuide(documentation) + "\n\n";
+    } else if (method === "full-guide" && documentation) {
+      systemPrompt += formatFullGuide(documentation) + "\n\n";
+    } else if (method === "pre-plan" && prePlan) {
+      systemPrompt += `PLAN:\n${prePlan}\n\n`;
+    }
+    // "first-message" and "none" don't modify system prompt
+
+    systemPrompt += baseInstructions;
+
+    // Build initial message content
+    let taskText = `Task: ${task.instruction}\nSuccess criteria: ${task.successCriteria}`;
+
+    // For first-message method, inject docs in the user message (only sent once)
+    if (method === "first-message" && documentation) {
+      const docText = formatFirstMessageDocs(documentation);
+      taskText = `${docText}\n\n${taskText}`;
+    }
+
+    taskText += "\n\nHere is the current browser screenshot:";
+
+    const initialContent: BetaContentBlockParam[] = [
+      {
+        type: "text",
+        text: taskText,
+      },
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/jpeg",
+          data: initialScreenshot,
+        },
+      },
+    ];
 
     const messages: BetaMessageParam[] = [
       {
         role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Task: ${task.instruction}\nSuccess criteria: ${task.successCriteria}\n\nHere is the current browser screenshot:`,
-          },
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: "image/jpeg",
-              data: initialScreenshot,
-            },
-          },
-        ],
+        content: initialContent,
       },
     ];
 
@@ -528,7 +739,7 @@ export function computeMetrics(results: TaskResult[]): AggregateMetrics {
 
 export async function runBenchmark(
   tasks: BenchmarkTask[],
-  documentation: Map<string, string>,
+  documentation: Map<string, SiteDocumentation>,
   options?: {
     apiKey?: string;
     onPhaseChange?: (
@@ -634,4 +845,130 @@ export function printBenchmarkSummary(result: BenchmarkResult): void {
     `  Avg Steps         ${baseline.avgSteps.toFixed(1)}          ${withDocs.avgSteps.toFixed(1)}          ${(withDocs.avgSteps - baseline.avgSteps).toFixed(1)}`
   );
   console.log("=".repeat(60));
+}
+
+// ─── Multi-Method Benchmark Runner ──────────────────────────────────
+
+export interface MultiMethodBenchmarkOptions {
+  apiKey?: string;
+  methods?: DocMethod[];
+  onProgress?: (update: {
+    phase: string;
+    site?: string;
+    method?: DocMethod;
+    tasksCompleted: number;
+    tasksTotal: number;
+  }) => void;
+}
+
+/**
+ * Run a multi-method benchmark across multiple sites.
+ * Tests each doc injection method on every task for every site.
+ */
+export async function runMultiMethodBenchmark(
+  siteTasks: Map<string, { url: string; tasks: BenchmarkTask[] }>,
+  documentation: Map<string, SiteDocumentation>,
+  options?: MultiMethodBenchmarkOptions
+): Promise<MultiMethodBenchmarkResult> {
+  const apiKey = options?.apiKey || process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error("ANTHROPIC_API_KEY required for benchmarks");
+  }
+
+  const methods = options?.methods || ALL_DOC_METHODS;
+  const onProgress = options?.onProgress || (() => {});
+  const client = new Anthropic({ apiKey });
+  const browser = await chromium.launch({ headless: true });
+
+  const siteResults: SiteResult[] = [];
+  // Track all results per method across all sites for overall metrics
+  const allMethodResults = new Map<DocMethod, TaskResult[]>();
+  for (const m of methods) allMethodResults.set(m, []);
+
+  let totalTasksRun = 0;
+  const totalTasksExpected = [...siteTasks.values()].reduce(
+    (sum, s) => sum + s.tasks.length * methods.length, 0
+  );
+
+  for (const [domain, { url, tasks }] of siteTasks) {
+    const doc = documentation.get(domain);
+    const methodResults: MethodResult[] = [];
+
+    for (const method of methods) {
+      console.log(`\n[${domain}] Running method: ${DOC_METHOD_LABELS[method]}`);
+      onProgress({
+        phase: "running",
+        site: domain,
+        method,
+        tasksCompleted: totalTasksRun,
+        tasksTotal: totalTasksExpected,
+      });
+
+      const taskResults: TaskResult[] = [];
+
+      for (const task of tasks) {
+        console.log(`  [${method}] ${task.id}: ${task.instruction}`);
+
+        // Generate pre-plan if needed
+        let prePlan: string | undefined;
+        if (method === "pre-plan" && doc) {
+          try {
+            prePlan = await generatePrePlan(client, task, doc);
+            console.log(`    Pre-plan generated (${prePlan.length} chars)`);
+          } catch (e) {
+            console.log(`    Pre-plan generation failed: ${e}`);
+          }
+        }
+
+        const result = await runTask(
+          client,
+          browser,
+          task,
+          method !== "none" ? doc : undefined,
+          method,
+          prePlan
+        );
+        taskResults.push(result);
+        allMethodResults.get(method)!.push(result);
+        totalTasksRun++;
+
+        onProgress({
+          phase: "running",
+          site: domain,
+          method,
+          tasksCompleted: totalTasksRun,
+          tasksTotal: totalTasksExpected,
+        });
+
+        console.log(
+          `    → ${result.success ? "SUCCESS" : "FAIL"} (${result.tokensUsed} tokens, ${result.steps} steps)`
+        );
+      }
+
+      methodResults.push({
+        method,
+        tasks: taskResults,
+        metrics: computeMetrics(taskResults),
+      });
+    }
+
+    siteResults.push({ domain, url, methods: methodResults });
+  }
+
+  await browser.close();
+
+  // Compute overall metrics per method
+  const overall: MethodResult[] = methods.map((method) => ({
+    method,
+    tasks: allMethodResults.get(method)!,
+    metrics: computeMetrics(allMethodResults.get(method)!),
+  }));
+
+  return {
+    timestamp: new Date().toISOString(),
+    sites: siteResults,
+    overall,
+    methods,
+    totalTasks: totalTasksRun,
+  };
 }

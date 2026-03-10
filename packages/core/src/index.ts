@@ -34,6 +34,8 @@ export interface WebMapOptions extends CrawlOptions {
   pageModel?: string;
   /** Model for synthesis/workflows */
   synthesisModel?: string;
+  /** Generate concise CUA-friendly docs instead of full element catalogs */
+  cuaMode?: boolean;
 }
 
 export interface WebMapResult {
@@ -62,6 +64,7 @@ export async function webmap(options: WebMapOptions): Promise<WebMapResult> {
     apiKey,
     pageModel: options.pageModel,
     synthesisModel: options.synthesisModel,
+    cuaMode: options.cuaMode,
   });
 
   const documentation = await generator.generate(crawlResult, options);

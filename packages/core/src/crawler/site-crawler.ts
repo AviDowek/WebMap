@@ -201,6 +201,125 @@ async function getAccessibilitySnapshot(page: Page): Promise<string> {
 }
 
 /**
+ * Capture an annotated screenshot with numbered overlays on key navigation elements.
+ * Inspired by OmniParser V2's Set-of-Marks and Vercel agent-browser's annotation system.
+ * Returns base64-encoded JPEG and a legend mapping numbers to element descriptions.
+ */
+async function captureAnnotatedScreenshot(
+  page: Page,
+  elements: InteractiveElement[]
+): Promise<{ screenshot: string; legend: string[] }> {
+  // Select navigation-relevant elements (short-named links, buttons, inputs, tabs)
+  const navElements = elements.filter((el) => {
+    if (el.role !== "link") return true; // buttons, inputs, tabs always relevant
+    const wordCount = el.name.split(/\s+/).length;
+    return wordCount <= 6 && el.name.length <= 60;
+  });
+
+  // Cap at 20 to avoid visual clutter
+  const toAnnotate = navElements.slice(0, 20);
+
+  // Inject numbered overlays onto the page
+  const legend: string[] = [];
+  const selectors: Array<{ index: number; role: string; name: string }> = [];
+
+  for (let i = 0; i < toAnnotate.length; i++) {
+    const el = toAnnotate[i];
+    legend.push(`[${i + 1}] ${el.role}: "${el.name}"`);
+    selectors.push({ index: i + 1, role: el.role, name: el.name });
+  }
+
+  // Use page.evaluate to find elements and overlay numbered badges
+  await page.evaluate((items: Array<{ index: number; role: string; name: string }>) => {
+    // Remove any previous annotations
+    document.querySelectorAll("[data-webmap-annotation]").forEach((el) => el.remove());
+
+    for (const item of items) {
+      // Find element by role and accessible name
+      const selector =
+        item.role === "link" ? `a` :
+        item.role === "button" ? `button, [role="button"]` :
+        item.role === "textbox" || item.role === "searchbox" ? `input[type="text"], input[type="search"], input:not([type]), textarea, [role="searchbox"], [role="textbox"]` :
+        item.role === "tab" ? `[role="tab"]` :
+        item.role === "menuitem" ? `[role="menuitem"]` :
+        item.role === "combobox" ? `[role="combobox"], select` :
+        item.role === "checkbox" ? `input[type="checkbox"], [role="checkbox"]` :
+        `[role="${item.role}"]`;
+
+      const candidates = document.querySelectorAll(selector);
+      let target: Element | null = null;
+
+      for (const candidate of candidates) {
+        const ariaLabel = candidate.getAttribute("aria-label") || "";
+        const textContent = candidate.textContent?.trim() || "";
+        if (
+          ariaLabel === item.name ||
+          textContent === item.name ||
+          textContent.startsWith(item.name)
+        ) {
+          target = candidate;
+          break;
+        }
+      }
+
+      if (!target) continue;
+
+      const rect = target.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+
+      // Create numbered badge overlay
+      const badge = document.createElement("div");
+      badge.setAttribute("data-webmap-annotation", "true");
+      badge.style.cssText = `
+        position: absolute;
+        left: ${rect.left + window.scrollX - 2}px;
+        top: ${rect.top + window.scrollY - 14}px;
+        background: #ff4444;
+        color: white;
+        font-size: 11px;
+        font-weight: bold;
+        padding: 1px 4px;
+        border-radius: 3px;
+        z-index: 999999;
+        pointer-events: none;
+        font-family: monospace;
+        line-height: 14px;
+      `;
+      badge.textContent = String(item.index);
+
+      // Create outline around the element
+      const outline = document.createElement("div");
+      outline.setAttribute("data-webmap-annotation", "true");
+      outline.style.cssText = `
+        position: absolute;
+        left: ${rect.left + window.scrollX - 2}px;
+        top: ${rect.top + window.scrollY - 2}px;
+        width: ${rect.width + 4}px;
+        height: ${rect.height + 4}px;
+        border: 2px solid #ff4444;
+        border-radius: 3px;
+        z-index: 999998;
+        pointer-events: none;
+      `;
+
+      document.body.appendChild(outline);
+      document.body.appendChild(badge);
+    }
+  }, selectors);
+
+  // Capture the annotated screenshot
+  const buffer = await page.screenshot({ type: "jpeg", quality: 75 });
+  const screenshot = buffer.toString("base64");
+
+  // Clean up annotations
+  await page.evaluate(() => {
+    document.querySelectorAll("[data-webmap-annotation]").forEach((el) => el.remove());
+  });
+
+  return { screenshot, legend };
+}
+
+/**
  * Crawl a website and extract structured data from every page.
  */
 export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
@@ -269,6 +388,15 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
       // Extract forms
       const forms = await extractForms(page);
 
+      // Capture annotated screenshot with numbered element overlays
+      let annotatedScreenshot: string | undefined;
+      try {
+        const annotation = await captureAnnotatedScreenshot(page, elements);
+        annotatedScreenshot = annotation.screenshot;
+      } catch {
+        // Non-critical — continue without annotated screenshot
+      }
+
       // Build page data (purpose, howToReach, dynamicBehavior filled by LLM later)
       const pageData: PageData = {
         url: currentUrl,
@@ -279,6 +407,7 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
         forms,
         dynamicBehavior: [],
         accessibilitySnapshot,
+        annotatedScreenshot,
       };
 
       pages.push(pageData);
