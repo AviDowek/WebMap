@@ -45,6 +45,29 @@ import {
   RATE_LIMIT_MAX_READS,
 } from "./security.js";
 
+// ─── Concurrency Helper ──────────────────────────────────────────────────────
+
+/** Run async tasks with a concurrency limit. */
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      results[i] = await fn(items[i]);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
 
 const rateLimiter = createRateLimiter();
@@ -567,12 +590,11 @@ app.post("/api/batch", async (c) => {
     startedAt: new Date().toISOString(),
   });
 
-  // Process sequentially in background
+  // Process concurrently in background (up to 3 at a time)
   (async () => {
     const batch = batchJobs.get(batchId)!;
 
-    for (let i = 0; i < batch.sites.length; i++) {
-      const site = batch.sites[i];
+    await runWithConcurrency(batch.sites, 3, async (site) => {
       const startTime = Date.now();
 
       try {
@@ -585,7 +607,7 @@ app.post("/api/batch", async (c) => {
           site.workflowsFound = cached.documentation.metadata.totalWorkflows;
           site.tokensUsed = cached.documentation.metadata.tokensUsed;
           site.durationMs = 0;
-          continue;
+          return;
         }
 
         site.status = "crawling";
@@ -618,7 +640,7 @@ app.post("/api/batch", async (c) => {
         site.error = error instanceof Error ? error.message : String(error);
         site.durationMs = Date.now() - startTime;
       }
-    }
+    });
 
     batch.status = "done";
   })();
@@ -957,7 +979,7 @@ app.post("/api/benchmark", async (c) => {
       const docsMap = new Map<string, SiteDocumentation>();
       const domains = [...new Set(tasks.map((t) => new URL(t.url).hostname))];
 
-      for (const domain of domains) {
+      await runWithConcurrency(domains, 3, async (domain) => {
         const task = tasks.find((t) => new URL(t.url).hostname === domain)!;
         try {
           // Always generate fresh CUA-optimized docs for benchmarks.
@@ -982,7 +1004,7 @@ app.post("/api/benchmark", async (c) => {
         } catch {
           // Skip domain if crawl fails
         }
-      }
+      });
 
       // Step 2: Run CUA benchmark
       state.status = "running-baseline";
@@ -1135,7 +1157,7 @@ app.post("/api/benchmark/multi", async (c) => {
       state.phase = "Crawling sites and generating CUA documentation...";
       const docsMap = new Map<string, SiteDocumentation>();
 
-      for (const { url, domain } of siteUrls) {
+      await runWithConcurrency(siteUrls, 3, async ({ url, domain }) => {
         state.currentSite = domain;
         try {
           const crawlResult = await crawlSite({
@@ -1163,7 +1185,7 @@ app.post("/api/benchmark/multi", async (c) => {
           console.error(`Failed to crawl ${domain}: ${e}`);
           // Skip this site
         }
-      }
+      });
 
       // Filter to only sites we have docs for
       const successfulSites = siteUrls.filter((s) => docsMap.has(s.domain));
