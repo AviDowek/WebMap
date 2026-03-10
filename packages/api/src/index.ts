@@ -45,6 +45,13 @@ import {
   RATE_LIMIT_MAX_CRAWLS,
   RATE_LIMIT_MAX_READS,
 } from "./security.js";
+import {
+  benchmarkHistoryStore,
+  multiMethodHistoryStore,
+  benchmarkSitesStore,
+  docsCacheStore,
+  loadAll as loadPersistedState,
+} from "./persistence.js";
 
 // ─── Concurrency Helper ──────────────────────────────────────────────────────
 
@@ -103,6 +110,7 @@ function getCached(domain: string): WebMapResult | null {
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
     docsCache.delete(domain);
+    saveDocsCache();
     return null;
   }
   return entry.result;
@@ -115,6 +123,27 @@ function setCache(domain: string, result: WebMapResult): void {
     if (firstKey) docsCache.delete(firstKey);
   }
   docsCache.set(domain, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+  // Persist to disk (fire-and-forget)
+  saveDocsCache();
+}
+
+function saveDocsCache(): void {
+  const obj: Record<string, { result: WebMapResult; expiresAt: number }> = {};
+  for (const [k, v] of docsCache) obj[k] = v;
+  (docsCacheStore as { data: unknown }).data = obj;
+  docsCacheStore.save().catch((e) => console.error("Failed to persist docs cache:", e));
+}
+
+function loadDocsCacheFromStore(): void {
+  docsCache.clear();
+  const obj = docsCacheStore.data as Record<string, { result: WebMapResult; expiresAt: number }>;
+  const now = Date.now();
+  for (const [k, v] of Object.entries(obj)) {
+    // Skip expired entries on load
+    if (v.expiresAt && v.expiresAt < now) continue;
+    // Extend TTL for persisted docs so they survive longer
+    docsCache.set(k, { result: v.result, expiresAt: Math.max(v.expiresAt, now + CACHE_TTL_MS) });
+  }
 }
 
 // ─── Server-side limits ─────────────────────────────────────────────────────
@@ -401,6 +430,7 @@ app.delete("/api/docs/:domain", (c) => {
     return c.json({ error: "No cached docs for this domain" }, 404);
   }
   docsCache.delete(domain);
+  saveDocsCache();
   return c.json({ ok: true });
 });
 
@@ -432,6 +462,7 @@ app.post("/api/docs/:domain/regenerate", async (c) => {
 
   // Delete old cache
   docsCache.delete(domain);
+  saveDocsCache();
 
   // Start a new crawl job
   const jobId = randomUUID();
@@ -483,13 +514,18 @@ interface SavedBenchmarkRun {
   result: BenchmarkResult;
 }
 
-const benchmarkHistory: SavedBenchmarkRun[] = [];
 const MAX_HISTORY = 20;
+
+// Persisted benchmark history (loaded from disk at startup)
+function getBenchmarkHistory(): SavedBenchmarkRun[] {
+  return benchmarkHistoryStore.data as SavedBenchmarkRun[];
+}
 
 // List saved benchmark runs
 app.get("/api/benchmark/history", (c) => {
+  const history = getBenchmarkHistory();
   return c.json({
-    runs: benchmarkHistory.map((r) => ({
+    runs: history.map((r) => ({
       id: r.id,
       timestamp: r.timestamp,
       tasksTotal: r.tasksTotal,
@@ -503,7 +539,7 @@ app.get("/api/benchmark/history", (c) => {
 // Get a specific saved run
 app.get("/api/benchmark/history/:runId", (c) => {
   const runId = c.req.param("runId");
-  const run = benchmarkHistory.find((r) => r.id === runId);
+  const run = getBenchmarkHistory().find((r) => r.id === runId);
   if (!run) {
     return c.json({ error: "Run not found" }, 404);
   }
@@ -511,13 +547,15 @@ app.get("/api/benchmark/history/:runId", (c) => {
 });
 
 // Delete a saved run
-app.delete("/api/benchmark/history/:runId", (c) => {
+app.delete("/api/benchmark/history/:runId", async (c) => {
   const runId = c.req.param("runId");
-  const idx = benchmarkHistory.findIndex((r) => r.id === runId);
+  const history = getBenchmarkHistory();
+  const idx = history.findIndex((r) => r.id === runId);
   if (idx === -1) {
     return c.json({ error: "Run not found" }, 404);
   }
-  benchmarkHistory.splice(idx, 1);
+  history.splice(idx, 1);
+  await benchmarkHistoryStore.save();
   return c.json({ ok: true });
 });
 
@@ -687,7 +725,23 @@ interface BenchmarkSiteConfig {
   addedAt: string;
 }
 
+// In-memory Map backed by persisted store
 const benchmarkSites = new Map<string, BenchmarkSiteConfig>();
+
+async function saveBenchmarkSites(): Promise<void> {
+  const obj: Record<string, BenchmarkSiteConfig> = {};
+  for (const [k, v] of benchmarkSites) obj[k] = v;
+  (benchmarkSitesStore as { data: unknown }).data = obj;
+  await benchmarkSitesStore.save();
+}
+
+function loadBenchmarkSitesFromStore(): void {
+  benchmarkSites.clear();
+  const obj = benchmarkSitesStore.data as Record<string, BenchmarkSiteConfig>;
+  for (const [k, v] of Object.entries(obj)) {
+    benchmarkSites.set(k, v);
+  }
+}
 
 // List all configured benchmark sites
 app.get("/api/benchmark/sites", (c) => {
@@ -732,17 +786,19 @@ app.post("/api/benchmark/sites", async (c) => {
   };
 
   benchmarkSites.set(domain, site);
+  await saveBenchmarkSites();
 
   return c.json({ domain, url: parsed.href, tasks: site.tasks, hasDocumentation: hasDocs });
 });
 
 // Remove a site from the benchmark pool
-app.delete("/api/benchmark/sites/:domain", (c) => {
+app.delete("/api/benchmark/sites/:domain", async (c) => {
   const domain = c.req.param("domain");
   if (!benchmarkSites.has(domain)) {
     return c.json({ error: "Site not found" }, 404);
   }
   benchmarkSites.delete(domain);
+  await saveBenchmarkSites();
   return c.json({ ok: true });
 });
 
@@ -772,12 +828,13 @@ app.post("/api/benchmark/sites/:domain/tasks", async (c) => {
   });
 
   site.tasks.push(task);
+  await saveBenchmarkSites();
 
   return c.json({ task, totalTasks: site.tasks.length });
 });
 
 // Delete a task from a site
-app.delete("/api/benchmark/sites/:domain/tasks/:taskId", (c) => {
+app.delete("/api/benchmark/sites/:domain/tasks/:taskId", async (c) => {
   const domain = c.req.param("domain");
   const taskId = c.req.param("taskId");
   const site = benchmarkSites.get(domain);
@@ -790,6 +847,7 @@ app.delete("/api/benchmark/sites/:domain/tasks/:taskId", (c) => {
     return c.json({ error: "Task not found" }, 404);
   }
   site.tasks.splice(idx, 1);
+  await saveBenchmarkSites();
   return c.json({ ok: true, remainingTasks: site.tasks.length });
 });
 
@@ -856,6 +914,7 @@ app.post("/api/benchmark/tasks/generate", async (c) => {
     const site = benchmarkSites.get(domain)!;
     site.tasks.push(...tasks);
     site.hasDocumentation = true;
+    await saveBenchmarkSites();
 
     return c.json({ tasks, totalTasks: site.tasks.length });
   } catch (error) {
@@ -893,6 +952,7 @@ app.post("/api/benchmark/sites/generate", async (c) => {
         });
       }
     }
+    await saveBenchmarkSites();
 
     return c.json({ sites, addedCount: sites.length });
   } catch (error) {
@@ -1021,16 +1081,18 @@ app.post("/api/benchmark", async (c) => {
       state.status = "done";
       state.result = result;
 
-      // Auto-save to history
-      if (benchmarkHistory.length >= MAX_HISTORY) {
-        benchmarkHistory.shift(); // remove oldest
+      // Auto-save to history (persisted)
+      const history = getBenchmarkHistory();
+      if (history.length >= MAX_HISTORY) {
+        history.shift(); // remove oldest
       }
-      benchmarkHistory.push({
+      history.push({
         id: benchId,
         timestamp: result.timestamp,
         tasksTotal: tasks.length,
         result,
       });
+      await benchmarkHistoryStore.save();
     } catch (error) {
       state.status = "error";
       state.error = error instanceof Error ? error.message : String(error);
@@ -1044,7 +1106,26 @@ app.get("/api/benchmark/status/:benchId", (c) => {
   const benchId = c.req.param("benchId");
   const state = benchmarkJobs.get(benchId);
   if (!state) {
-    return c.json({ error: "Benchmark not found" }, 404);
+    // Check if it's a completed run that was persisted before a restart
+    const savedSingle = getBenchmarkHistory().find((r) => r.id === benchId);
+    if (savedSingle) {
+      return c.json({
+        id: benchId, status: "done", tasksTotal: savedSingle.tasksTotal,
+        tasksCompleted: savedSingle.tasksTotal, result: savedSingle.result,
+        multiResult: null, multiMethod: false,
+        currentSite: null, currentMethod: null, error: null,
+      });
+    }
+    const savedMulti = getMultiMethodHistory().find((r) => r.id === benchId);
+    if (savedMulti) {
+      return c.json({
+        id: benchId, status: "done", tasksTotal: savedMulti.result.totalTasks,
+        tasksCompleted: savedMulti.result.totalTasks, result: null,
+        multiResult: savedMulti.result, multiMethod: true,
+        currentSite: null, currentMethod: null, error: null,
+      });
+    }
+    return c.json({ error: "Benchmark not found. It may have been interrupted by a server restart." }, 404);
   }
 
   return c.json({
@@ -1069,7 +1150,10 @@ interface MultiMethodSavedRun {
   result: MultiMethodBenchmarkResult;
 }
 
-const multiMethodHistory: MultiMethodSavedRun[] = [];
+// Persisted multi-method history (loaded from disk at startup)
+function getMultiMethodHistory(): MultiMethodSavedRun[] {
+  return multiMethodHistoryStore.data as MultiMethodSavedRun[];
+}
 
 app.post("/api/benchmark/multi", async (c) => {
   const body = await c.req.json<{
@@ -1138,6 +1222,7 @@ app.post("/api/benchmark/multi", async (c) => {
             });
           }
         }
+        await saveBenchmarkSites();
       } else if (opts.useConfiguredSites) {
         for (const site of benchmarkSites.values()) {
           siteUrls.push({ url: site.url, domain: site.domain });
@@ -1189,7 +1274,10 @@ app.post("/api/benchmark/multi", async (c) => {
 
           // Update benchmark site config
           const siteConfig = benchmarkSites.get(domain);
-          if (siteConfig) siteConfig.hasDocumentation = true;
+          if (siteConfig) {
+            siteConfig.hasDocumentation = true;
+            await saveBenchmarkSites();
+          }
         } catch (e) {
           const errMsg = e instanceof Error ? e.stack || e.message : String(e);
           console.error(`Failed to generate docs for ${domain}: ${errMsg}`);
@@ -1225,6 +1313,7 @@ app.post("/api/benchmark/multi", async (c) => {
             // Save to site config
             if (siteConfig) {
               siteConfig.tasks = generated;
+              await saveBenchmarkSites();
             }
           } catch (e) {
             console.error(`Failed to generate tasks for ${domain}: ${e}`);
@@ -1265,15 +1354,17 @@ app.post("/api/benchmark/multi", async (c) => {
       state.status = "done";
       state.multiResult = result;
 
-      // Save to history
-      if (multiMethodHistory.length >= MAX_HISTORY) {
-        multiMethodHistory.shift();
+      // Save to history (persisted)
+      const mmHistory = getMultiMethodHistory();
+      if (mmHistory.length >= MAX_HISTORY) {
+        mmHistory.shift();
       }
-      multiMethodHistory.push({
+      mmHistory.push({
         id: benchId,
         timestamp: result.timestamp,
         result,
       });
+      await multiMethodHistoryStore.save();
     } catch (error) {
       state.status = "error";
       state.error = error instanceof Error ? error.message : String(error);
@@ -1285,8 +1376,9 @@ app.post("/api/benchmark/multi", async (c) => {
 
 // Multi-method benchmark history
 app.get("/api/benchmark/multi/history", (c) => {
+  const mmHistory = getMultiMethodHistory();
   return c.json({
-    runs: multiMethodHistory.map((r) => ({
+    runs: mmHistory.map((r) => ({
       id: r.id,
       timestamp: r.timestamp,
       sites: r.result.sites.length,
@@ -1298,20 +1390,22 @@ app.get("/api/benchmark/multi/history", (c) => {
 
 app.get("/api/benchmark/multi/history/:runId", (c) => {
   const runId = c.req.param("runId");
-  const run = multiMethodHistory.find((r) => r.id === runId);
+  const run = getMultiMethodHistory().find((r) => r.id === runId);
   if (!run) {
     return c.json({ error: "Run not found" }, 404);
   }
   return c.json(run);
 });
 
-app.delete("/api/benchmark/multi/history/:runId", (c) => {
+app.delete("/api/benchmark/multi/history/:runId", async (c) => {
   const runId = c.req.param("runId");
-  const idx = multiMethodHistory.findIndex((r) => r.id === runId);
+  const mmHistory = getMultiMethodHistory();
+  const idx = mmHistory.findIndex((r) => r.id === runId);
   if (idx === -1) {
     return c.json({ error: "Run not found" }, 404);
   }
-  multiMethodHistory.splice(idx, 1);
+  mmHistory.splice(idx, 1);
+  await multiMethodHistoryStore.save();
   return c.json({ ok: true });
 });
 
@@ -1383,15 +1477,22 @@ if (!ANTHROPIC_KEY) {
   console.error("WARNING: ANTHROPIC_API_KEY not set. Crawl requests will fail.");
 }
 
-console.log(`WebMap API server starting on port ${port}`);
-if (API_KEY) {
-  console.log("  Auth: API key required (set WEBMAP_API_KEY)");
-} else {
-  console.log("  Auth: OPEN (set WEBMAP_API_KEY to require auth)");
-}
-serve({ fetch: app.fetch, port });
-console.log(`WebMap API server running at http://localhost:${port}`);
-console.log(`  POST /api/crawl          — Start a crawl`);
-console.log(`  GET  /api/docs/:domain   — Get cached docs`);
-console.log(`  GET  /api/status/:jobId  — Check job status`);
-console.log(`  GET  /{url}              — URL-prefix proxy`);
+// Load persisted state, then start server
+(async () => {
+  await loadPersistedState();
+  loadBenchmarkSitesFromStore();
+  loadDocsCacheFromStore();
+
+  console.log(`WebMap API server starting on port ${port}`);
+  if (API_KEY) {
+    console.log("  Auth: API key required (set WEBMAP_API_KEY)");
+  } else {
+    console.log("  Auth: OPEN (set WEBMAP_API_KEY to require auth)");
+  }
+  serve({ fetch: app.fetch, port });
+  console.log(`WebMap API server running at http://localhost:${port}`);
+  console.log(`  POST /api/crawl          — Start a crawl`);
+  console.log(`  GET  /api/docs/:domain   — Get cached docs`);
+  console.log(`  GET  /api/status/:jobId  — Check job status`);
+  console.log(`  GET  /{url}              — URL-prefix proxy`);
+})();

@@ -8,3 +8,4 @@ generated/
 .next/
 storage/
 benchmark-results/
+packages/api/data/

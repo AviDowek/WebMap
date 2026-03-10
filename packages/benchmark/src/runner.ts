@@ -83,7 +83,9 @@ export type DocMethod =
   | "micro-guide"    // ~100 token guide in system prompt
   | "full-guide"     // ~400 token guide with layout/nav/sitemap in system prompt
   | "first-message"  // Docs injected in first user message (doesn't compound)
-  | "pre-plan";      // Use docs to generate task-specific plan before CUA starts
+  | "pre-plan"       // Use docs to generate task-specific plan before CUA starts
+  | "a11y-tree"      // Text-based: accessibility tree instead of screenshots
+  | "hybrid";        // Both: accessibility tree + screenshots
 
 export const ALL_DOC_METHODS: DocMethod[] = [
   "none",
@@ -91,6 +93,8 @@ export const ALL_DOC_METHODS: DocMethod[] = [
   "full-guide",
   "first-message",
   "pre-plan",
+  "a11y-tree",
+  "hybrid",
 ];
 
 export const DOC_METHOD_LABELS: Record<DocMethod, string> = {
@@ -99,6 +103,8 @@ export const DOC_METHOD_LABELS: Record<DocMethod, string> = {
   "full-guide": "Full Guide (~400 tokens, system prompt)",
   "first-message": "First Message Injection (no compounding)",
   "pre-plan": "Pre-Plan (task-specific plan from docs)",
+  "a11y-tree": "A11y Tree (text-only, no screenshots)",
+  "hybrid": "Hybrid (a11y tree + screenshots)",
 };
 
 export interface MethodResult {
@@ -389,11 +395,19 @@ function mapCuaKeyToPlaywright(key: string): string {
   return KEY_MAP[key] || key;
 }
 
-// ─── Screenshot ──────────────────────────────────────────────────────
+// ─── Screenshot & Accessibility ─────────────────────────────────────
 
 async function captureScreenshot(page: Page): Promise<string> {
   const buffer = await page.screenshot({ type: "jpeg", quality: 85 });
   return buffer.toString("base64");
+}
+
+async function getA11ySnapshot(page: Page): Promise<string> {
+  try {
+    return await page.locator("body").ariaSnapshot();
+  } catch {
+    return "(accessibility tree unavailable)";
+  }
 }
 
 // ─── CUA Action Execution ───────────────────────────────────────────
@@ -497,6 +511,95 @@ async function executeComputerAction(
   }
 }
 
+// ─── A11y-tree tool schema for text-only agent ─────────────────────
+
+const A11Y_BROWSER_TOOL = {
+  name: "browser_action",
+  description: "Execute a browser action. Use role and name from the accessibility tree to identify elements. For clicks/typing, specify the element's role and name. For scrolling, use direction. For key presses, use key.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      action: {
+        type: "string",
+        enum: ["click", "type", "scroll", "key", "goto"],
+        description: "The action to perform",
+      },
+      role: {
+        type: "string",
+        description: "ARIA role of the target element (e.g. 'link', 'button', 'textbox', 'heading')",
+      },
+      name: {
+        type: "string",
+        description: "Accessible name of the target element (the text label)",
+      },
+      text: {
+        type: "string",
+        description: "Text to type (for 'type' action) or key to press (for 'key' action)",
+      },
+      direction: {
+        type: "string",
+        enum: ["up", "down"],
+        description: "Scroll direction (for 'scroll' action)",
+      },
+      url: {
+        type: "string",
+        description: "URL to navigate to (for 'goto' action)",
+      },
+    },
+    required: ["action"],
+  },
+};
+
+/**
+ * Execute a browser action based on a11y-tree element references.
+ * Maps role/name pairs to Playwright locators.
+ */
+async function executeA11yAction(
+  page: Page,
+  input: Record<string, unknown>
+): Promise<void> {
+  const action = input.action as string;
+  const role = input.role as string | undefined;
+  const name = input.name as string | undefined;
+  const text = input.text as string | undefined;
+
+  switch (action) {
+    case "click": {
+      if (role && name) {
+        await page.getByRole(role as Parameters<Page["getByRole"]>[0], { name }).first().click({ timeout: 5000 });
+      } else if (name) {
+        await page.getByText(name, { exact: false }).first().click({ timeout: 5000 });
+      }
+      break;
+    }
+    case "type": {
+      if (role && name && text) {
+        await page.getByRole(role as Parameters<Page["getByRole"]>[0], { name }).first().fill(text, { timeout: 5000 });
+      } else if (name && text) {
+        await page.getByLabel(name).first().fill(text, { timeout: 5000 });
+      } else if (text) {
+        await page.keyboard.type(text);
+      }
+      break;
+    }
+    case "key": {
+      if (text) await page.keyboard.press(text);
+      break;
+    }
+    case "scroll": {
+      const dir = input.direction as string;
+      await page.mouse.wheel(0, dir === "up" ? -500 : 500);
+      break;
+    }
+    case "goto": {
+      if (input.url) {
+        await page.goto(input.url as string, { waitUntil: "domcontentloaded" });
+      }
+      break;
+    }
+  }
+}
+
 // ─── Run a single task with Claude CUA ──────────────────────────────
 
 async function runTask(
@@ -513,6 +616,10 @@ async function runTask(
   let success = false;
   let error: string | undefined;
 
+  const isA11yOnly = method === "a11y-tree";
+  const isHybrid = method === "hybrid";
+  const useA11y = isA11yOnly || isHybrid;
+
   const context = await browser.newContext({
     viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
   });
@@ -522,78 +629,96 @@ async function runTask(
     await page.goto(task.url, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000);
 
-    const initialScreenshot = await captureScreenshot(page);
-
     const baseInstructions = `When you have completed the task, respond with a text message containing "TASK_COMPLETE" and a brief summary.
 If you cannot complete the task, respond with "TASK_FAILED" and the reason.`;
 
     // Build system prompt based on method
-    let systemPrompt = `You are a browser automation agent completing tasks on websites.
+    let systemPrompt: string;
+    if (isA11yOnly) {
+      systemPrompt = `You are a browser automation agent completing tasks on websites.
+You receive the page's accessibility tree (text representation of all elements). Use element roles and names to identify targets for your actions.
+
+${baseInstructions}`;
+    } else {
+      systemPrompt = `You are a browser automation agent completing tasks on websites.
 Analyze the screenshots to understand the page and interact with elements to complete the given task.
 
 `;
+      if (method === "micro-guide" && documentation) {
+        systemPrompt += formatMicroGuide(documentation) + "\n\n";
+      } else if (method === "full-guide" && documentation) {
+        systemPrompt += formatFullGuide(documentation) + "\n\n";
+      } else if (method === "pre-plan" && prePlan) {
+        systemPrompt += `PLAN:\n${prePlan}\n\n`;
+      }
 
-    if (method === "micro-guide" && documentation) {
-      systemPrompt += formatMicroGuide(documentation) + "\n\n";
-    } else if (method === "full-guide" && documentation) {
-      systemPrompt += formatFullGuide(documentation) + "\n\n";
-    } else if (method === "pre-plan" && prePlan) {
-      systemPrompt += `PLAN:\n${prePlan}\n\n`;
+      systemPrompt += baseInstructions;
     }
-    // "first-message" and "none" don't modify system prompt
-
-    systemPrompt += baseInstructions;
 
     // Build initial message content
     let taskText = `Task: ${task.instruction}\nSuccess criteria: ${task.successCriteria}`;
 
-    // For first-message method, inject docs in the user message (only sent once)
     if (method === "first-message" && documentation) {
       const docText = formatFirstMessageDocs(documentation);
       taskText = `${docText}\n\n${taskText}`;
     }
 
-    taskText += "\n\nHere is the current browser screenshot:";
+    const initialContent: BetaContentBlockParam[] = [];
 
-    const initialContent: BetaContentBlockParam[] = [
-      {
-        type: "text",
-        text: taskText,
-      },
-      {
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: "image/jpeg",
-          data: initialScreenshot,
-        },
-      },
-    ];
+    if (isA11yOnly) {
+      // A11y-tree mode: text only, no screenshots
+      const a11yTree = await getA11ySnapshot(page);
+      taskText += "\n\nCurrent page accessibility tree:\n" + a11yTree;
+      initialContent.push({ type: "text", text: taskText });
+    } else {
+      // Vision or hybrid mode
+      const initialScreenshot = await captureScreenshot(page);
+      if (isHybrid) {
+        const a11yTree = await getA11ySnapshot(page);
+        taskText += "\n\nAccessibility tree:\n" + a11yTree + "\n\nBrowser screenshot:";
+      } else {
+        taskText += "\n\nHere is the current browser screenshot:";
+      }
+      initialContent.push(
+        { type: "text", text: taskText },
+        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: initialScreenshot } },
+      );
+    }
 
     const messages: BetaMessageParam[] = [
-      {
-        role: "user",
-        content: initialContent,
-      },
+      { role: "user", content: initialContent },
     ];
 
+    // Choose model and tools based on mode
+    const model = isA11yOnly ? "claude-haiku-4-5-20251001" : "claude-sonnet-4-20250514";
+
     for (let step = 0; step < MAX_STEPS; step++) {
-      const response = await client.beta.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 4096,
-        temperature: 0.3,
-        system: systemPrompt,
-        tools: [
-          {
-            type: "computer_20250124",
-            name: "computer",
-            display_width_px: DISPLAY_WIDTH,
-            display_height_px: DISPLAY_HEIGHT,
-          },
-        ],
-        messages,
-        betas: ["computer-use-2025-01-24"],
-      });
+      // Build request differently for a11y vs vision modes
+      const response = isA11yOnly
+        ? await client.messages.create({
+            model,
+            max_tokens: 4096,
+            temperature: 0.3,
+            system: systemPrompt,
+            tools: [A11Y_BROWSER_TOOL],
+            messages: messages as Parameters<typeof client.messages.create>[0]["messages"],
+          })
+        : await client.beta.messages.create({
+            model,
+            max_tokens: 4096,
+            temperature: 0.3,
+            system: systemPrompt,
+            tools: [
+              {
+                type: "computer_20250124",
+                name: "computer",
+                display_width_px: DISPLAY_WIDTH,
+                display_height_px: DISPLAY_HEIGHT,
+              },
+            ],
+            messages,
+            betas: ["computer-use-2025-01-24"],
+          });
 
       tokensUsed +=
         (response.usage?.input_tokens || 0) +
@@ -633,69 +758,88 @@ Analyze the screenshots to understand the page and interact with elements to com
         break;
       }
 
-      // Execute each tool call and return screenshots
+      // Execute each tool call and return results
       const toolResults: BetaContentBlockParam[] = [];
 
       for (const toolUse of toolUseBlocks) {
         const input = toolUse.input as Record<string, unknown>;
-        const actionStr = `${input.action}${
-          Array.isArray(input.coordinate)
-            ? ` (${input.coordinate[0]},${input.coordinate[1]})`
-            : ""
-        }${typeof input.text === "string" ? ` "${input.text}"` : ""}`;
+
+        // Format action string for logging
+        const actionStr = isA11yOnly
+          ? `${input.action}${input.role ? ` [${input.role}]` : ""}${input.name ? ` "${input.name}"` : ""}${input.text ? ` text="${input.text}"` : ""}`
+          : `${input.action}${Array.isArray(input.coordinate) ? ` (${input.coordinate[0]},${input.coordinate[1]})` : ""}${typeof input.text === "string" ? ` "${input.text}"` : ""}`;
         actions.push(`Step ${step + 1}: ${actionStr}`);
 
         try {
-          await executeComputerAction(page, input);
+          if (isA11yOnly) {
+            await executeA11yAction(page, input);
+          } else {
+            await executeComputerAction(page, input);
+          }
           await page.waitForTimeout(500);
 
-          const screenshot = await captureScreenshot(page);
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: toolUse.id,
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: "image/jpeg",
-                  data: screenshot,
-                },
-              },
-            ],
-          });
-        } catch (actionError) {
-          let screenshot = "";
-          try {
-            screenshot = await captureScreenshot(page);
-          } catch {
-            // ignore screenshot failure
+          if (isA11yOnly) {
+            // A11y-tree mode: return text snapshot
+            const a11yTree = await getA11ySnapshot(page);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: `Page accessibility tree after action:\n${a11yTree}`,
+            });
+          } else if (isHybrid) {
+            // Hybrid: return both a11y tree and screenshot
+            const screenshot = await captureScreenshot(page);
+            const a11yTree = await getA11ySnapshot(page);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: [
+                { type: "text", text: `Accessibility tree:\n${a11yTree}` },
+                { type: "image", source: { type: "base64", media_type: "image/jpeg", data: screenshot } },
+              ],
+            });
+          } else {
+            // Standard vision mode
+            const screenshot = await captureScreenshot(page);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: [
+                { type: "image", source: { type: "base64", media_type: "image/jpeg", data: screenshot } },
+              ],
+            });
           }
-
+        } catch (actionError) {
           const errMsg =
             actionError instanceof Error
               ? actionError.message
               : String(actionError);
           actions.push(`  → Error: ${errMsg}`);
 
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: toolUse.id,
-            content: screenshot
-              ? [
-                  { type: "text", text: `Action failed: ${errMsg}` },
-                  {
-                    type: "image",
-                    source: {
-                      type: "base64",
-                      media_type: "image/jpeg",
-                      data: screenshot,
-                    },
-                  },
-                ]
-              : `Action failed: ${errMsg}`,
-            is_error: true,
-          });
+          if (isA11yOnly) {
+            const a11yTree = await getA11ySnapshot(page).catch(() => "(unavailable)");
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: `Action failed: ${errMsg}\n\nPage accessibility tree:\n${a11yTree}`,
+              is_error: true,
+            });
+          } else {
+            let screenshot = "";
+            try { screenshot = await captureScreenshot(page); } catch { /* ignore */ }
+
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: screenshot
+                ? [
+                    { type: "text", text: `Action failed: ${errMsg}` },
+                    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: screenshot } },
+                  ]
+                : `Action failed: ${errMsg}`,
+              is_error: true,
+            });
+          }
         }
       }
 
@@ -891,9 +1035,13 @@ export async function runMultiMethodBenchmark(
     (sum, s) => sum + s.tasks.length * methods.length, 0
   );
 
-  for (const [domain, { url, tasks }] of siteTasks) {
+  // Run sites concurrently (up to 2 at a time)
+  const SITE_CONCURRENCY = 2;
+  const siteEntries = [...siteTasks.entries()];
+  const siteResultsMap = new Map<string, { domain: string; url: string; methods: MethodResult[] }>();
+
+  const runSite = async ([domain, { url, tasks }]: [string, { url: string; tasks: BenchmarkTask[] }]) => {
     const doc = documentation.get(domain);
-    // Collect results per method for this site
     const methodTaskResults = new Map<DocMethod, TaskResult[]>();
     for (const m of methods) methodTaskResults.set(m, []);
 
@@ -925,7 +1073,7 @@ export async function runMultiMethodBenchmark(
           client,
           browser,
           task,
-          method !== "none" ? doc : undefined,
+          method === "none" || method === "a11y-tree" ? undefined : doc,
           method,
           prePlan
         );
@@ -959,7 +1107,28 @@ export async function runMultiMethodBenchmark(
       metrics: computeMetrics(methodTaskResults.get(method)!),
     }));
 
-    siteResults.push({ domain, url, methods: methodResults });
+    siteResultsMap.set(domain, { domain, url, methods: methodResults });
+  };
+
+  // Process sites with concurrency limit
+  const activeSites: Promise<void>[] = [];
+  for (const entry of siteEntries) {
+    const p = runSite(entry).then(() => {
+      // Remove from active set when done
+      const idx = activeSites.indexOf(p);
+      if (idx >= 0) activeSites.splice(idx, 1);
+    });
+    activeSites.push(p);
+    if (activeSites.length >= SITE_CONCURRENCY) {
+      await Promise.race(activeSites);
+    }
+  }
+  await Promise.all(activeSites);
+
+  // Preserve original site order
+  for (const [domain, { url }] of siteEntries) {
+    const sr = siteResultsMap.get(domain);
+    if (sr) siteResults.push(sr);
   }
 
   await browser.close();
