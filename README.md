@@ -1,4 +1,4 @@
-# WebMap
+# WebMap- An Experiment in Progress
 
 AI-powered website documentation generator for AI agents. WebMap crawls websites using Playwright, extracts interactive elements and accessibility trees, and uses Claude to generate comprehensive structured documentation. It includes a multi-method benchmarking system that measures how different documentation injection strategies affect vision-based browser agent (CUA) performance.
 
