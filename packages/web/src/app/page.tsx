@@ -150,6 +150,7 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 const MAX_POLL_ATTEMPTS = 120;
+const MAX_BENCHMARK_POLL_ATTEMPTS = 4800; // 4800 * 3s = 4 hours
 
 // ─── Styles ──────────────────────────────────────────────────────────
 
@@ -988,9 +989,30 @@ function BenchmarkTab() {
     loadSites();
     loadHistory();
     loadMultiHistory();
+    // Reconnect to running benchmark if page was refreshed
+    const savedBenchId = localStorage.getItem("activeBenchmarkId");
+    const savedMulti = localStorage.getItem("activeBenchmarkMulti") === "true";
+    if (savedBenchId) {
+      // Check if it's still running
+      fetch(`${API_BASE}/api/benchmark/status/${savedBenchId}`)
+        .then((res) => res.ok ? res.json() : null)
+        .then((d) => {
+          if (d && d.status !== "done" && d.status !== "error") {
+            pollBenchmark(savedBenchId, d.tasksTotal || 0, savedMulti);
+          } else {
+            localStorage.removeItem("activeBenchmarkId");
+            localStorage.removeItem("activeBenchmarkMulti");
+          }
+        })
+        .catch(() => {
+          localStorage.removeItem("activeBenchmarkId");
+          localStorage.removeItem("activeBenchmarkMulti");
+        });
+    }
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadSites() {
@@ -1241,10 +1263,14 @@ function BenchmarkTab() {
   }
 
   function pollBenchmark(benchId: string, initialTotal: number, multi: boolean) {
+    // Save to localStorage so we can reconnect after page refresh
+    localStorage.setItem("activeBenchmarkId", benchId);
+    localStorage.setItem("activeBenchmarkMulti", String(multi));
+
     setStatus({
       state: "running",
       benchId,
-      phase: "Starting...",
+      phase: "Reconnecting..." ,
       tasksTotal: initialTotal,
       tasksCompleted: 0,
       multiMethod: multi,
@@ -1253,10 +1279,12 @@ function BenchmarkTab() {
     let attempts = 0;
     pollRef.current = setInterval(async () => {
       attempts++;
-      if (attempts > MAX_POLL_ATTEMPTS * 5) {
+      if (attempts > MAX_BENCHMARK_POLL_ATTEMPTS) {
         if (pollRef.current) clearInterval(pollRef.current);
         pollRef.current = null;
-        setStatus((prev) => ({ ...prev, state: "error", error: "Benchmark timed out" }));
+        localStorage.removeItem("activeBenchmarkId");
+        localStorage.removeItem("activeBenchmarkMulti");
+        setStatus((prev) => ({ ...prev, state: "error", error: "Benchmark timed out after 4 hours" }));
         return;
       }
 
@@ -1269,6 +1297,8 @@ function BenchmarkTab() {
         if (d.status === "done") {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
+          localStorage.removeItem("activeBenchmarkId");
+          localStorage.removeItem("activeBenchmarkMulti");
           if (d.multiResult) {
             setStatus({ state: "done", benchId, multiMethod: true, multiResult: d.multiResult });
             loadMultiHistory();
@@ -1280,6 +1310,8 @@ function BenchmarkTab() {
         } else if (d.status === "error") {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
+          localStorage.removeItem("activeBenchmarkId");
+          localStorage.removeItem("activeBenchmarkMulti");
           setStatus({ state: "error", error: d.error });
         } else {
           const phaseLabel = d.currentSite && d.currentMethod
