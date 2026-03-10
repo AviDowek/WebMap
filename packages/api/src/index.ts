@@ -590,11 +590,11 @@ app.post("/api/batch", async (c) => {
     startedAt: new Date().toISOString(),
   });
 
-  // Process concurrently in background (up to 3 at a time)
+  // Process concurrently in background (up to 2 at a time)
   (async () => {
     const batch = batchJobs.get(batchId)!;
 
-    await runWithConcurrency(batch.sites, 3, async (site) => {
+    await runWithConcurrency(batch.sites, 2, async (site) => {
       const startTime = Date.now();
 
       try {
@@ -979,7 +979,7 @@ app.post("/api/benchmark", async (c) => {
       const docsMap = new Map<string, SiteDocumentation>();
       const domains = [...new Set(tasks.map((t) => new URL(t.url).hostname))];
 
-      await runWithConcurrency(domains, 3, async (domain) => {
+      await runWithConcurrency(domains, 2, async (domain) => {
         const task = tasks.find((t) => new URL(t.url).hostname === domain)!;
         try {
           // Always generate fresh CUA-optimized docs for benchmarks.
@@ -1157,7 +1157,7 @@ app.post("/api/benchmark/multi", async (c) => {
       state.phase = "Crawling sites and generating CUA documentation...";
       const docsMap = new Map<string, SiteDocumentation>();
 
-      await runWithConcurrency(siteUrls, 3, async ({ url, domain }) => {
+      await runWithConcurrency(siteUrls, 2, async ({ url, domain }) => {
         state.currentSite = domain;
         try {
           const crawlResult = await crawlSite({
@@ -1182,7 +1182,8 @@ app.post("/api/benchmark/multi", async (c) => {
           const siteConfig = benchmarkSites.get(domain);
           if (siteConfig) siteConfig.hasDocumentation = true;
         } catch (e) {
-          console.error(`Failed to crawl ${domain}: ${e}`);
+          const errMsg = e instanceof Error ? e.stack || e.message : String(e);
+          console.error(`Failed to crawl/generate docs for ${domain}: ${errMsg}`);
           // Skip this site
         }
       });
@@ -1191,7 +1192,7 @@ app.post("/api/benchmark/multi", async (c) => {
       const successfulSites = siteUrls.filter((s) => docsMap.has(s.domain));
       if (successfulSites.length === 0) {
         state.status = "error";
-        state.error = "Failed to generate docs for any site.";
+        state.error = "Failed to generate docs for any site. Check server logs for details.";
         return;
       }
 
