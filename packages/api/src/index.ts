@@ -19,6 +19,7 @@ import {
   crawlSite,
   DocGenerator,
   formatAsMarkdown,
+  type CrawlResult,
   type WebMapResult,
   type SiteDocumentation,
 } from "@webmap/core";
@@ -975,36 +976,33 @@ app.post("/api/benchmark", async (c) => {
     const state = benchmarkJobs.get(benchId)!;
 
     try {
-      // Step 1: Generate docs for all target domains (CUA mode for benchmarks)
+      // Step 1a: Crawl all target domains in parallel
       const docsMap = new Map<string, SiteDocumentation>();
       const domains = [...new Set(tasks.map((t) => new URL(t.url).hostname))];
+      const crawlResults = new Map<string, { url: string; result: CrawlResult }>();
 
       await runWithConcurrency(domains, 2, async (domain) => {
         const task = tasks.find((t) => new URL(t.url).hostname === domain)!;
         try {
-          // Always generate fresh CUA-optimized docs for benchmarks.
-          // Cached docs may have been generated without cuaMode.
-          const crawlResult = await crawlSite({
-            url: task.url,
-            maxPages: 15,
-            maxDepth: 2,
-          });
-          const generator = new DocGenerator({
-            apiKey: ANTHROPIC_KEY!,
-            cuaMode: true,
-          });
-          const documentation = await generator.generate(crawlResult, {
-            url: task.url,
-            maxPages: 15,
-            maxDepth: 2,
-          });
-          const markdown = formatAsMarkdown(documentation);
-          setCache(domain, { documentation, markdown });
-          docsMap.set(domain, documentation);
+          const result = await crawlSite({ url: task.url, maxPages: 15, maxDepth: 2 });
+          crawlResults.set(domain, { url: task.url, result });
         } catch {
           // Skip domain if crawl fails
         }
       });
+
+      // Step 1b: Generate docs sequentially (avoid Claude API rate limits)
+      for (const [domain, { url, result: crawlResult }] of crawlResults) {
+        try {
+          const generator = new DocGenerator({ apiKey: ANTHROPIC_KEY!, cuaMode: true });
+          const documentation = await generator.generate(crawlResult, { url, maxPages: 15, maxDepth: 2 });
+          const markdown = formatAsMarkdown(documentation);
+          setCache(domain, { documentation, markdown });
+          docsMap.set(domain, documentation);
+        } catch {
+          // Skip domain if doc generation fails
+        }
+      }
 
       // Step 2: Run CUA benchmark
       state.status = "running-baseline";
@@ -1152,19 +1150,29 @@ app.post("/api/benchmark/multi", async (c) => {
         return;
       }
 
-      // Step 2: Generate docs for all sites (CUA mode)
+      // Step 2a: Crawl all sites in parallel (up to 2 at a time)
       state.status = "generating-docs";
-      state.phase = "Crawling sites and generating CUA documentation...";
+      state.phase = "Crawling sites...";
       const docsMap = new Map<string, SiteDocumentation>();
+      const crawlResults = new Map<string, { url: string; result: CrawlResult }>();
 
       await runWithConcurrency(siteUrls, 2, async ({ url, domain }) => {
         state.currentSite = domain;
         try {
-          const crawlResult = await crawlSite({
-            url,
-            maxPages: 15,
-            maxDepth: 2,
-          });
+          const result = await crawlSite({ url, maxPages: 15, maxDepth: 2 });
+          crawlResults.set(domain, { url, result });
+          console.log(`Crawled ${domain}: ${result.pages.length} pages`);
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.stack || e.message : String(e);
+          console.error(`Failed to crawl ${domain}: ${errMsg}`);
+        }
+      });
+
+      // Step 2b: Generate docs sequentially (avoid Claude API rate limits)
+      state.phase = "Generating CUA documentation...";
+      for (const [domain, { url, result: crawlResult }] of crawlResults) {
+        state.currentSite = domain;
+        try {
           const generator = new DocGenerator({
             apiKey: ANTHROPIC_KEY!,
             cuaMode: true,
@@ -1177,16 +1185,16 @@ app.post("/api/benchmark/multi", async (c) => {
           const markdown = formatAsMarkdown(documentation);
           setCache(domain, { documentation, markdown });
           docsMap.set(domain, documentation);
+          console.log(`Generated docs for ${domain}`);
 
           // Update benchmark site config
           const siteConfig = benchmarkSites.get(domain);
           if (siteConfig) siteConfig.hasDocumentation = true;
         } catch (e) {
           const errMsg = e instanceof Error ? e.stack || e.message : String(e);
-          console.error(`Failed to crawl/generate docs for ${domain}: ${errMsg}`);
-          // Skip this site
+          console.error(`Failed to generate docs for ${domain}: ${errMsg}`);
         }
-      });
+      }
 
       // Filter to only sites we have docs for
       const successfulSites = siteUrls.filter((s) => docsMap.has(s.domain));
