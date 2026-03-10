@@ -3,7 +3,9 @@
  * Discovers all pages and extracts accessibility trees.
  */
 
-import { PlaywrightCrawler, type PlaywrightCrawlingContext } from "crawlee";
+import { PlaywrightCrawler, Configuration, type PlaywrightCrawlingContext } from "crawlee";
+import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import type { Page } from "playwright";
 import type { CrawlOptions, InteractiveElement, PageForm, FormField, PageData } from "../types.js";
 
@@ -335,6 +337,10 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
   const skippedUrls: string[] = [];
   const visitedUrls = new Set<string>();
 
+  // Each crawl gets its own storage directory to allow concurrent crawls
+  const storageDir = `./storage/crawl-${randomUUID()}`;
+  const config = new Configuration({ storageClientOptions: { localDataDirectory: storageDir } });
+
   // Parse the base domain for same-origin filtering
   const baseUrl = new URL(url);
   const baseDomain = baseUrl.hostname;
@@ -432,9 +438,14 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
       log.warning(`Failed to crawl: ${request.url}`);
       skippedUrls.push(request.url);
     },
-  });
+  }, config);
 
-  await crawler.run([url]);
+  try {
+    await crawler.run([url]);
+  } finally {
+    // Clean up isolated storage directory
+    await rm(storageDir, { recursive: true, force: true }).catch(() => {});
+  }
 
   return {
     pages,
