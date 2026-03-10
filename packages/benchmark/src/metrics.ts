@@ -7,6 +7,7 @@ import type { TaskResult, AggregateMetrics, BenchmarkResult, MultiRunTaskResult 
 export function computeMetrics(results: TaskResult[]): AggregateMetrics {
   const total = results.length;
   const successes = results.filter((r) => r.success).length;
+  // CUA-only metrics (excludes verification overhead)
   const totalTokens = results.reduce((s, r) => s + r.tokensUsed, 0);
   const totalDuration = results.reduce((s, r) => s + r.durationMs, 0);
   const totalSteps = results.reduce((s, r) => s + r.steps, 0);
@@ -24,6 +25,10 @@ export function computeMetrics(results: TaskResult[]): AggregateMetrics {
   const verificationOverrideRate =
     verifiedResults.length > 0 ? overrides.length / verifiedResults.length : undefined;
 
+  // Verification overhead (tracked separately so it doesn't pollute CUA metrics)
+  const totalVerificationTokens = results.reduce((s, r) => s + (r.verificationTokensUsed ?? 0), 0);
+  const totalVerificationMs = results.reduce((s, r) => s + (r.verificationDurationMs ?? 0), 0);
+
   return {
     totalTasks: total,
     successRate,
@@ -32,6 +37,10 @@ export function computeMetrics(results: TaskResult[]): AggregateMetrics {
     avgSteps: total > 0 ? totalSteps / total : 0,
     confidenceInterval95: ci,
     verificationOverrideRate,
+    verificationOverhead: verifiedResults.length > 0 ? {
+      avgTokensPerTask: totalVerificationTokens / verifiedResults.length,
+      avgDurationMs: totalVerificationMs / verifiedResults.length,
+    } : undefined,
   };
 }
 
@@ -135,6 +144,16 @@ export function printBenchmarkSummary(result: BenchmarkResult): void {
   if (baseline.verificationOverrideRate !== undefined) {
     console.log(
       `  Verify Overrides  ${(baseline.verificationOverrideRate * 100).toFixed(1)}%        ${((withDocs.verificationOverrideRate ?? 0) * 100).toFixed(1)}%`
+    );
+  }
+  if (baseline.verificationOverhead) {
+    console.log("");
+    console.log("  Verification Overhead (not included in CUA metrics above):");
+    console.log(
+      `    Avg Tokens      ${baseline.verificationOverhead.avgTokensPerTask.toFixed(0)}        ${(withDocs.verificationOverhead?.avgTokensPerTask ?? 0).toFixed(0)}`
+    );
+    console.log(
+      `    Avg Duration    ${(baseline.verificationOverhead.avgDurationMs / 1000).toFixed(1)}s        ${((withDocs.verificationOverhead?.avgDurationMs ?? 0) / 1000).toFixed(1)}s`
     );
   }
   console.log("=".repeat(60));

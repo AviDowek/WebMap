@@ -25,11 +25,11 @@ export interface TaskResult {
   taskId: string;
   /** Whether the task was completed successfully (verified if verification enabled) */
   success: boolean;
-  /** Number of steps/actions taken */
+  /** Number of CUA steps/actions taken (excludes verification) */
   steps: number;
-  /** Total tokens consumed */
+  /** Tokens consumed by the CUA agent (excludes verification overhead) */
   tokensUsed: number;
-  /** Time taken in ms */
+  /** CUA execution time in ms (excludes verification overhead) */
   durationMs: number;
   /** Error message if failed */
   error?: string;
@@ -41,6 +41,10 @@ export interface TaskResult {
   selfReportedSuccess?: boolean;
   /** Explanation from the verification judge */
   verificationReason?: string;
+  /** Tokens consumed by the verification call (separate from CUA tokensUsed) */
+  verificationTokensUsed?: number;
+  /** Time spent on verification in ms (separate from CUA durationMs) */
+  verificationDurationMs?: number;
   /** Which run this is (1-indexed), when runsPerTask > 1 */
   runIndex?: number;
 }
@@ -95,6 +99,11 @@ export interface AggregateMetrics {
   confidenceInterval95?: { lower: number; upper: number };
   /** Fraction of tasks where verification disagreed with agent self-report */
   verificationOverrideRate?: number;
+  /** Verification overhead tracked separately from CUA metrics */
+  verificationOverhead?: {
+    avgTokensPerTask: number;
+    avgDurationMs: number;
+  };
 }
 
 // ─── Multi-Method Types ─────────────────────────────────────────────

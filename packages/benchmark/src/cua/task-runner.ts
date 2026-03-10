@@ -273,33 +273,39 @@ Analyze the screenshots to understand the page and interact with elements to com
     error = e instanceof Error ? e.message : String(e);
   }
 
+  // Record CUA-only metrics before verification
+  const cuaDurationMs = Date.now() - startTime;
+
   // ─── Automated Verification ──────────────────────────────────────
   let verified: boolean | undefined;
   let selfReportedSuccess: boolean | undefined;
   let verificationReason: string | undefined;
+  let verificationTokensUsed: number | undefined;
+  let verificationDurationMs: number | undefined;
 
   if (options?.verify) {
     selfReportedSuccess = success;
+    const verifyStart = Date.now();
     try {
       const verification = await verifyTaskSuccess(client, page, task, success);
       verified = true;
       verificationReason = verification.reason;
-      tokensUsed += verification.tokensUsed;
+      verificationTokensUsed = verification.tokensUsed;
+      verificationDurationMs = Date.now() - verifyStart;
 
       if (verification.confidence >= 0.6 && verification.success !== success) {
-        // Override self-report with verified result
         success = verification.success;
         console.log(
           `    [verify] Override: agent said ${selfReportedSuccess ? "PASS" : "FAIL"}, ` +
           `verifier says ${success ? "PASS" : "FAIL"} (${(verification.confidence * 100).toFixed(0)}% confidence): ${verification.reason}`
         );
       } else if (verification.confidence < 0.6) {
-        // Low confidence — keep self-report but flag it
         verificationReason = `Low confidence (${(verification.confidence * 100).toFixed(0)}%): ${verification.reason}`;
         console.log(`    [verify] Low confidence — keeping self-report: ${verificationReason}`);
       }
     } catch (e) {
       verificationReason = `Verification failed: ${e instanceof Error ? e.message : String(e)}`;
+      verificationDurationMs = Date.now() - verifyStart;
     }
   }
 
@@ -311,11 +317,13 @@ Analyze the screenshots to understand the page and interact with elements to com
     success,
     steps: actions.length,
     tokensUsed,
-    durationMs: Date.now() - startTime,
+    durationMs: cuaDurationMs,
     error,
     actions,
     verified,
     selfReportedSuccess,
     verificationReason,
+    verificationTokensUsed,
+    verificationDurationMs,
   };
 }
