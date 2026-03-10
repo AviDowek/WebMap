@@ -126,8 +126,8 @@ export interface MultiMethodBenchmarkResult {
 
 // ─── CUA Constants ───────────────────────────────────────────────────
 
-const DISPLAY_WIDTH = 1280;
-const DISPLAY_HEIGHT = 720;
+const DISPLAY_WIDTH = 1024;
+const DISPLAY_HEIGHT = 768;
 const MAX_STEPS = 25;
 
 // ─── CUA Doc Formatter ──────────────────────────────────────────────
@@ -392,7 +392,7 @@ function mapCuaKeyToPlaywright(key: string): string {
 // ─── Screenshot ──────────────────────────────────────────────────────
 
 async function captureScreenshot(page: Page): Promise<string> {
-  const buffer = await page.screenshot({ type: "jpeg", quality: 75 });
+  const buffer = await page.screenshot({ type: "jpeg", quality: 85 });
   return buffer.toString("base64");
 }
 
@@ -581,6 +581,7 @@ Analyze the screenshots to understand the page and interact with elements to com
       const response = await client.beta.messages.create({
         model: "claude-sonnet-4-20250514",
         max_tokens: 4096,
+        temperature: 0.3,
         system: systemPrompt,
         tools: [
           {
@@ -892,21 +893,21 @@ export async function runMultiMethodBenchmark(
 
   for (const [domain, { url, tasks }] of siteTasks) {
     const doc = documentation.get(domain);
-    const methodResults: MethodResult[] = [];
+    // Collect results per method for this site
+    const methodTaskResults = new Map<DocMethod, TaskResult[]>();
+    for (const m of methods) methodTaskResults.set(m, []);
 
-    for (const method of methods) {
-      console.log(`\n[${domain}] Running method: ${DOC_METHOD_LABELS[method]}`);
+    for (const task of tasks) {
+      console.log(`\n[${domain}] Task: ${task.id} — running ${methods.length} methods in parallel`);
       onProgress({
         phase: "running",
         site: domain,
-        method,
         tasksCompleted: totalTasksRun,
         tasksTotal: totalTasksExpected,
       });
 
-      const taskResults: TaskResult[] = [];
-
-      for (const task of tasks) {
+      // Run all methods for this task in parallel
+      const methodPromises = methods.map(async (method) => {
         console.log(`  [${method}] ${task.id}: ${task.instruction}`);
 
         // Generate pre-plan if needed
@@ -914,9 +915,9 @@ export async function runMultiMethodBenchmark(
         if (method === "pre-plan" && doc) {
           try {
             prePlan = await generatePrePlan(client, task, doc);
-            console.log(`    Pre-plan generated (${prePlan.length} chars)`);
+            console.log(`    [${method}] Pre-plan generated (${prePlan.length} chars)`);
           } catch (e) {
-            console.log(`    Pre-plan generation failed: ${e}`);
+            console.log(`    [${method}] Pre-plan generation failed: ${e}`);
           }
         }
 
@@ -928,29 +929,35 @@ export async function runMultiMethodBenchmark(
           method,
           prePlan
         );
-        taskResults.push(result);
-        allMethodResults.get(method)!.push(result);
-        totalTasksRun++;
-
-        onProgress({
-          phase: "running",
-          site: domain,
-          method,
-          tasksCompleted: totalTasksRun,
-          tasksTotal: totalTasksExpected,
-        });
 
         console.log(
-          `    → ${result.success ? "SUCCESS" : "FAIL"} (${result.tokensUsed} tokens, ${result.steps} steps)`
+          `    [${method}] → ${result.success ? "SUCCESS" : "FAIL"} (${result.tokensUsed} tokens, ${result.steps} steps)`
         );
+
+        return { method, result };
+      });
+
+      const results = await Promise.all(methodPromises);
+
+      for (const { method, result } of results) {
+        methodTaskResults.get(method)!.push(result);
+        allMethodResults.get(method)!.push(result);
+        totalTasksRun++;
       }
 
-      methodResults.push({
-        method,
-        tasks: taskResults,
-        metrics: computeMetrics(taskResults),
+      onProgress({
+        phase: "running",
+        site: domain,
+        tasksCompleted: totalTasksRun,
+        tasksTotal: totalTasksExpected,
       });
     }
+
+    const methodResults: MethodResult[] = methods.map((method) => ({
+      method,
+      tasks: methodTaskResults.get(method)!,
+      metrics: computeMetrics(methodTaskResults.get(method)!),
+    }));
 
     siteResults.push({ domain, url, methods: methodResults });
   }
