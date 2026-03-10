@@ -14,6 +14,13 @@ import type {
   CrawlOptions,
 } from "../types.js";
 import type { CrawlResult } from "../crawler/site-crawler.js";
+import {
+  callLLMWithValidation,
+  CuaPageEnrichmentSchema,
+  PageEnrichmentSchema,
+  WorkflowsSchema,
+  type LLMCallResult,
+} from "./llm-validation.js";
 
 const SYSTEM_PROMPT = `You are a documentation generator for AI agents. Your job is to analyze web page data (accessibility tree snapshots, interactive elements, forms) and produce comprehensive documentation that enables AI agents to navigate and operate the website without vision.
 
@@ -42,17 +49,19 @@ interface GeneratorOptions {
   synthesisModel?: string;
   /** Generate concise CUA-friendly docs instead of full element catalogs */
   cuaMode?: boolean;
+  /** Optional pre-constructed Anthropic client (for testing) */
+  client?: Anthropic;
 }
 
 /** Safely extract text from an Anthropic API response */
-function extractText(response: Anthropic.Message): string {
+export function extractText(response: Anthropic.Message): string {
   if (!response.content || response.content.length === 0) return "";
   const block = response.content[0];
   return block.type === "text" ? block.text : "";
 }
 
 /** Safely parse JSON from LLM output, returning null on failure */
-function safeParseJson(text: string): Record<string, unknown> | null {
+export function safeParseJson(text: string): Record<string, unknown> | null {
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) return null;
   try {
@@ -65,7 +74,7 @@ function safeParseJson(text: string): Record<string, unknown> | null {
 }
 
 /** Sanitize a string from LLM output — strip HTML tags and control chars */
-function sanitize(value: unknown): string {
+export function sanitize(value: unknown): string {
   if (typeof value !== "string") return "";
   return value
     .replace(/<[^>]*>/g, "") // strip HTML tags
@@ -79,9 +88,12 @@ export class DocGenerator {
   private synthesisModel: string;
   private cuaMode: boolean;
   private tokensUsed = 0;
+  private llmRetries = 0;
+  private llmFailures = 0;
+  private confidenceScores: number[] = [];
 
   constructor(options: GeneratorOptions) {
-    this.client = new Anthropic({ apiKey: options.apiKey });
+    this.client = options.client || new Anthropic({ apiKey: options.apiKey });
     this.pageModel = options.pageModel || "claude-sonnet-4-20250514";
     this.synthesisModel = options.synthesisModel || "claude-sonnet-4-20250514";
     this.cuaMode = options.cuaMode || false;
@@ -115,6 +127,8 @@ export class DocGenerator {
       domain
     );
 
+    const enrichedCount = this.confidenceScores.filter((c) => c > 0).length;
+
     return {
       domain,
       rootUrl,
@@ -132,6 +146,17 @@ export class DocGenerator {
         totalWorkflows: workflows.length,
         crawlDurationMs: crawlResult.durationMs,
         tokensUsed: this.tokensUsed,
+        llmRetries: this.llmRetries,
+        llmFailures: this.llmFailures,
+        avgConfidence:
+          this.confidenceScores.length > 0
+            ? this.confidenceScores.reduce((a, b) => a + b, 0) /
+              this.confidenceScores.length
+            : 0,
+        enrichmentRate:
+          enrichedPages.length > 0
+            ? enrichedCount / enrichedPages.length
+            : 0,
       },
     };
   }
@@ -177,27 +202,22 @@ Respond in this exact JSON format:
   "navigationStrategy": "How would a human visually navigate from this page to key features? (2-3 sentences)"
 }`;
 
-    try {
-      const response = await this.client.messages.create({
-        model: this.pageModel,
-        max_tokens: 500,
-        system: CUA_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: prompt }],
-      });
+    const result = await callLLMWithValidation({
+      client: this.client,
+      model: this.pageModel,
+      maxTokens: 500,
+      system: CUA_SYSTEM_PROMPT,
+      prompt,
+      schema: CuaPageEnrichmentSchema,
+    });
 
-      this.tokensUsed +=
-        (response.usage?.input_tokens || 0) +
-        (response.usage?.output_tokens || 0);
+    this.trackResult(result);
 
-      const text = extractText(response);
-      const data = safeParseJson(text);
-
-      if (data) {
-        page.purpose = sanitize(data.purpose) || page.title;
-        page.visualLayout = sanitize(data.visualLayout) || "";
-        page.navigationStrategy = sanitize(data.navigationStrategy) || "";
-      }
-    } catch {
+    if (result.data) {
+      page.purpose = sanitize(result.data.purpose) || page.title;
+      page.visualLayout = sanitize(result.data.visualLayout) || "";
+      page.navigationStrategy = sanitize(result.data.navigationStrategy) || "";
+    } else {
       page.purpose = page.title || "Unknown page";
     }
 
@@ -238,39 +258,31 @@ Respond in this exact JSON format:
   "dynamicBehavior": ["behavior 1", "behavior 2"]
 }`;
 
-    try {
-      const response = await this.client.messages.create({
-        model: this.pageModel,
-        max_tokens: 4000,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: prompt }],
-      });
+    const result = await callLLMWithValidation({
+      client: this.client,
+      model: this.pageModel,
+      maxTokens: 4000,
+      system: SYSTEM_PROMPT,
+      prompt,
+      schema: PageEnrichmentSchema,
+    });
 
-      this.tokensUsed +=
-        (response.usage?.input_tokens || 0) +
-        (response.usage?.output_tokens || 0);
+    this.trackResult(result);
 
-      const text = extractText(response);
-      const data = safeParseJson(text);
+    if (result.data) {
+      page.purpose = sanitize(result.data.purpose) || page.title;
+      page.howToReach = sanitize(result.data.howToReach) || "";
+      page.dynamicBehavior = result.data.dynamicBehavior
+        .map(sanitize)
+        .filter(Boolean);
 
-      if (data) {
-        page.purpose = sanitize(data.purpose) || page.title;
-        page.howToReach = sanitize(data.howToReach) || "";
-        page.dynamicBehavior = Array.isArray(data.dynamicBehavior)
-          ? data.dynamicBehavior.map(sanitize).filter(Boolean)
-          : [];
-
-        // Update element results
-        if (data.elementResults && typeof data.elementResults === "object") {
-          const results = data.elementResults as Record<string, unknown>;
-          for (const element of page.elements) {
-            if (results[element.selector]) {
-              element.result = sanitize(results[element.selector]);
-            }
-          }
+      // Update element results
+      for (const element of page.elements) {
+        if (result.data.elementResults[element.selector]) {
+          element.result = sanitize(result.data.elementResults[element.selector]);
         }
       }
-    } catch {
+    } else {
       page.purpose = page.title || "Unknown page";
     }
 
@@ -356,50 +368,32 @@ Respond in this exact JSON format:
   ]
 }`;
 
-    try {
-      const response = await this.client.messages.create({
-        model: this.synthesisModel,
-        max_tokens: 4000,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: prompt }],
-      });
+    const result = await callLLMWithValidation({
+      client: this.client,
+      model: this.synthesisModel,
+      maxTokens: 4000,
+      system: SYSTEM_PROMPT,
+      prompt,
+      schema: WorkflowsSchema,
+    });
 
-      this.tokensUsed +=
-        (response.usage?.input_tokens || 0) +
-        (response.usage?.output_tokens || 0);
+    this.trackResult(result);
 
-      const text = extractText(response);
-      const data = safeParseJson(text);
-
-      if (data && Array.isArray(data.workflows)) {
-        return data.workflows
-          .filter(
-            (w: unknown): w is Record<string, unknown> =>
-              typeof w === "object" && w !== null
-          )
-          .map((w) => ({
-            name: sanitize(w.name),
-            description: sanitize(w.description),
-            steps: Array.isArray(w.steps)
-              ? w.steps
-                  .filter(
-                    (s: unknown): s is Record<string, unknown> =>
-                      typeof s === "object" && s !== null
-                  )
-                  .map((s) => ({
-                    step: typeof s.step === "number" ? s.step : 0,
-                    description: sanitize(s.description),
-                    selector: sanitize(s.selector) || undefined,
-                    actionType: sanitize(s.actionType) || "click",
-                    value: sanitize(s.value) || undefined,
-                    expectedResult: sanitize(s.expectedResult) || "",
-                  }))
-              : [],
-          }))
-          .filter((w: { name: string }) => w.name);
-      }
-    } catch {
-      // Return empty if detection fails
+    if (result.data) {
+      return result.data.workflows
+        .map((w) => ({
+          name: sanitize(w.name),
+          description: sanitize(w.description),
+          steps: w.steps.map((s) => ({
+            step: s.step,
+            description: sanitize(s.description),
+            selector: s.selector ? sanitize(s.selector) : undefined,
+            actionType: sanitize(s.actionType) || "click",
+            value: s.value ? sanitize(s.value) : undefined,
+            expectedResult: sanitize(s.expectedResult) || "",
+          })),
+        }))
+        .filter((w) => w.name);
     }
 
     return [];
@@ -433,6 +427,18 @@ Respond in this exact JSON format:
       return sanitize(extractText(response)) || domain;
     } catch {
       return `Website at ${domain}`;
+    }
+  }
+
+  /** Track validation metrics from an LLM call result */
+  private trackResult<T>(result: LLMCallResult<T>): void {
+    this.tokensUsed += result.tokensUsed;
+    this.confidenceScores.push(result.confidence);
+    if (result.attempts > 1) {
+      this.llmRetries += result.attempts - 1;
+    }
+    if (result.data === null) {
+      this.llmFailures++;
     }
   }
 

@@ -6,7 +6,12 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { BenchmarkTask } from "./runner.js";
+import {
+  callLLMWithValidation,
+  GeneratedTaskSchema,
+  GeneratedSitesSchema,
+} from "@webmap/core";
+import type { BenchmarkTask } from "./types.js";
 
 /**
  * Generate benchmark tasks for a site using Claude to analyze its documentation.
@@ -19,15 +24,13 @@ export async function generateTasksForSite(
 ): Promise<BenchmarkTask[]> {
   const domain = new URL(siteUrl).hostname;
 
-  const response = await client.messages.create({
+  const result = await callLLMWithValidation({
+    client,
     model: "claude-sonnet-4-20250514",
-    max_tokens: 2000,
+    maxTokens: 2000,
     system:
       "You generate realistic browser automation tasks for benchmarking AI agents. Return ONLY a valid JSON array, no markdown fencing or explanation.",
-    messages: [
-      {
-        role: "user",
-        content: `Generate ${count} diverse browser tasks for ${siteUrl}.
+    prompt: `Generate ${count} diverse browser tasks for ${siteUrl}.
 
 Website documentation:
 ${documentation.substring(0, 8000)}
@@ -38,26 +41,17 @@ Return a JSON array where each item has these exact fields:
 - "category": string — one of: "navigation", "search", "form-fill", "multi-step", "information-extraction"
 
 Make tasks realistic and varied. They should be completable by a browser agent using mouse clicks and keyboard input on the live site. Do NOT include tasks that require authentication or creating accounts.`,
-      },
-    ],
+    schema: GeneratedTaskSchema,
+    matchArray: true,
   });
 
-  const text =
-    response.content[0].type === "text" ? response.content[0].text : "";
-
-  // Extract JSON array from response
-  const jsonMatch = text.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    throw new Error("Failed to parse task list from AI response");
+  if (!result.data) {
+    throw new Error(
+      `Failed to parse task list from AI response after ${result.attempts} attempts: ${result.errors.join("; ")}`
+    );
   }
 
-  const rawTasks: Array<{
-    instruction: string;
-    successCriteria: string;
-    category: string;
-  }> = JSON.parse(jsonMatch[0]);
-
-  return rawTasks.map((t, i) => ({
+  return result.data.map((t, i) => ({
     id: `${domain.replace(/\./g, "-")}-gen-${i + 1}`,
     url: siteUrl,
     instruction: t.instruction,
@@ -77,15 +71,13 @@ export async function generateDiverseSites(
 ): Promise<Array<{ url: string; category: string; description: string }>> {
   const clampedCount = Math.min(Math.max(count, 1), 20);
 
-  const response = await client.messages.create({
+  const result = await callLLMWithValidation({
+    client,
     model: "claude-sonnet-4-20250514",
-    max_tokens: 2000,
+    maxTokens: 2000,
     system:
       "You suggest real, publicly accessible websites for benchmarking browser automation agents. Return ONLY a valid JSON array, no markdown fencing or explanation. Choose well-known, stable sites that don't require authentication.",
-    messages: [
-      {
-        role: "user",
-        content: `Suggest ${clampedCount} diverse websites for benchmarking a browser automation AI agent. Each site should be a DIFFERENT type/category.
+    prompt: `Suggest ${clampedCount} diverse websites for benchmarking a browser automation AI agent. Each site should be a DIFFERENT type/category.
 
 Include a mix from these categories:
 - Documentation sites (developer docs, wikis)
@@ -103,30 +95,27 @@ Return a JSON array where each item has:
 - "description": string — one sentence about the site
 
 Choose REAL sites that are publicly accessible without login. Prefer well-known stable sites.`,
-      },
-    ],
+    schema: GeneratedSitesSchema,
+    matchArray: true,
   });
 
-  const text =
-    response.content[0].type === "text" ? response.content[0].text : "";
-
-  const jsonMatch = text.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    throw new Error("Failed to parse site list from AI response");
+  if (!result.data) {
+    throw new Error(
+      `Failed to parse site list from AI response after ${result.attempts} attempts: ${result.errors.join("; ")}`
+    );
   }
 
-  const sites: Array<{ url: string; category: string; description: string }> =
-    JSON.parse(jsonMatch[0]);
-
-  // Validate URLs
-  return sites.filter((s) => {
-    try {
-      const parsed = new URL(s.url);
-      return parsed.protocol === "https:" || parsed.protocol === "http:";
-    } catch {
-      return false;
-    }
-  }).slice(0, clampedCount);
+  // Additional URL validation
+  return result.data
+    .filter((s) => {
+      try {
+        const parsed = new URL(s.url);
+        return parsed.protocol === "https:" || parsed.protocol === "http:";
+      } catch {
+        return false;
+      }
+    })
+    .slice(0, clampedCount);
 }
 
 /**

@@ -21,7 +21,7 @@ export interface CrawlResult {
  * Parse Playwright's accessibility tree snapshot into structured interactive elements.
  * The snapshot is YAML-like with roles, names, and states.
  */
-function parseAccessibilitySnapshot(snapshot: string): InteractiveElement[] {
+export function parseAccessibilitySnapshot(snapshot: string): InteractiveElement[] {
   const elements: InteractiveElement[] = [];
   const lines = snapshot.split("\n");
 
@@ -80,7 +80,7 @@ function parseAccessibilitySnapshot(snapshot: string): InteractiveElement[] {
   return elements;
 }
 
-function getDefaultAction(role: string): string {
+export function getDefaultAction(role: string): string {
   switch (role) {
     case "button":
       return "Click";
@@ -218,8 +218,8 @@ async function captureAnnotatedScreenshot(
     return wordCount <= 6 && el.name.length <= 60;
   });
 
-  // Cap at 20 to avoid visual clutter
-  const toAnnotate = navElements.slice(0, 20);
+  // Cap at 40 elements for annotated screenshots
+  const toAnnotate = navElements.slice(0, 40);
 
   // Inject numbered overlays onto the page
   const legend: string[] = [];
@@ -322,6 +322,38 @@ async function captureAnnotatedScreenshot(
 }
 
 /**
+ * Dismiss common cookie consent banners and popup overlays.
+ * Called after page load, before extracting accessibility data.
+ */
+async function dismissPopups(page: Page): Promise<void> {
+  const consentSelectors = [
+    'button:has-text("Accept All")',
+    'button:has-text("Accept Cookies")',
+    'button:has-text("Accept")',
+    'button:has-text("I agree")',
+    'button:has-text("Got it")',
+    'button:has-text("OK")',
+    '[id*="cookie"] button',
+    '[class*="cookie"] button',
+    '[id*="consent"] button',
+    '[class*="consent"] button',
+  ];
+
+  for (const selector of consentSelectors) {
+    try {
+      const btn = page.locator(selector).first();
+      if (await btn.isVisible({ timeout: 500 })) {
+        await btn.click();
+        await page.waitForTimeout(500);
+        break;
+      }
+    } catch {
+      // Continue trying other selectors
+    }
+  }
+}
+
+/**
  * Crawl a website and extract structured data from every page.
  */
 export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
@@ -379,8 +411,14 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
 
       // Wait for page to be reasonably loaded
       await page.waitForLoadState("domcontentloaded");
-      // Give dynamic content a moment to render
-      await page.waitForTimeout(1500);
+      // Wait for network idle (no requests for 500ms), capped at 5s
+      await Promise.race([
+        page.waitForLoadState("networkidle").catch(() => {}),
+        page.waitForTimeout(5000),
+      ]);
+
+      // Dismiss cookie consent and common popup overlays
+      await dismissPopups(page);
 
       // Extract page title
       const title = await page.title();

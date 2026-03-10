@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc",
     "run-bench": "node dist/index.js",
+    "run-suite": "node dist/run-suite.js",
     "report": "node dist/report.js"
   },
   "dependencies": {

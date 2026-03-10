@@ -83,6 +83,31 @@ export const multiMethodHistoryStore = createStore<unknown[]>("multi-method-hist
 export const benchmarkSitesStore = createStore<Record<string, unknown>>("benchmark-sites", {});
 export const docsCacheStore = createStore<Record<string, unknown>>("docs-cache", {});
 
+// Active job stores — persisted so we can recover state after restart
+export const activeJobsStore = createStore<Record<string, unknown>>("active-jobs", {});
+export const activeBatchesStore = createStore<Record<string, unknown>>("active-batches", {});
+export const activeBenchmarksStore = createStore<Record<string, unknown>>("active-benchmarks", {});
+
+// ─── Debounced save ──────────────────────────────────────────────────────────
+
+const pendingSaves = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Schedule a debounced save for a store. Coalesces rapid mutations into
+ * a single disk write after `delayMs` (default 200ms).
+ */
+export function debouncedSave(store: Store<unknown>, key: string, delayMs = 200): void {
+  const existing = pendingSaves.get(key);
+  if (existing) clearTimeout(existing);
+  pendingSaves.set(
+    key,
+    setTimeout(() => {
+      pendingSaves.delete(key);
+      store.save().catch((e) => console.error(`Failed to persist ${key}:`, e));
+    }, delayMs)
+  );
+}
+
 /**
  * Load all stores from disk. Call once at startup.
  */
@@ -92,6 +117,9 @@ export async function loadAll(): Promise<void> {
     multiMethodHistoryStore.load(),
     benchmarkSitesStore.load(),
     docsCacheStore.load(),
+    activeJobsStore.load(),
+    activeBatchesStore.load(),
+    activeBenchmarksStore.load(),
   ]);
   const docsCount = Object.keys(docsCacheStore.data as Record<string, unknown>).length;
   console.log(
@@ -100,4 +128,45 @@ export async function loadAll(): Promise<void> {
     `${Object.keys(benchmarkSitesStore.data as Record<string, unknown>).length} sites, ` +
     `${docsCount} cached docs`
   );
+
+  // Mark any non-terminal active jobs as interrupted
+  let interrupted = 0;
+  for (const store of [activeJobsStore, activeBatchesStore, activeBenchmarksStore]) {
+    const data = store.data as Record<string, { status: string; error?: string }>;
+    for (const [id, job] of Object.entries(data)) {
+      if (job.status !== "done" && job.status !== "error") {
+        data[id] = { ...job, status: "error", error: "Interrupted by server restart" };
+        interrupted++;
+      }
+    }
+    if (interrupted > 0) await store.save();
+  }
+  if (interrupted > 0) {
+    console.log(`  Marked ${interrupted} interrupted job(s) as error`);
+  }
+}
+
+// ─── Periodic cleanup ────────────────────────────────────────────────────────
+
+const CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_COMPLETED_AGE_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Start periodic cleanup of completed jobs older than 1 hour.
+ */
+export function startCleanupTimer(): void {
+  setInterval(async () => {
+    const now = Date.now();
+    for (const store of [activeJobsStore, activeBatchesStore, activeBenchmarksStore]) {
+      const data = store.data as Record<string, { status: string; completedAt?: number }>;
+      let changed = false;
+      for (const [id, job] of Object.entries(data)) {
+        if ((job.status === "done" || job.status === "error") && job.completedAt && now - job.completedAt > MAX_COMPLETED_AGE_MS) {
+          delete data[id];
+          changed = true;
+        }
+      }
+      if (changed) await store.save().catch(() => {});
+    }
+  }, CLEANUP_INTERVAL_MS);
 }

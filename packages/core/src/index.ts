@@ -6,8 +6,22 @@
  * can use to navigate and operate websites.
  */
 
-export { crawlSite, type CrawlResult } from "./crawler/site-crawler.js";
+export {
+  crawlSite,
+  parseAccessibilitySnapshot,
+  getDefaultAction,
+  type CrawlResult,
+} from "./crawler/site-crawler.js";
 export { DocGenerator } from "./agents/doc-generator.js";
+export {
+  callLLMWithValidation,
+  CuaPageEnrichmentSchema,
+  PageEnrichmentSchema,
+  WorkflowsSchema,
+  GeneratedTaskSchema,
+  GeneratedSitesSchema,
+  type LLMCallResult,
+} from "./agents/llm-validation.js";
 export { formatAsMarkdown } from "./docs/markdown-formatter.js";
 export type {
   CrawlOptions,

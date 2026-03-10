@@ -147,5 +147,13 @@ export interface SiteDocumentation {
     totalWorkflows: number;
     crawlDurationMs: number;
     tokensUsed: number;
+    /** Total LLM retry attempts across all calls */
+    llmRetries: number;
+    /** LLM calls that failed after all retries */
+    llmFailures: number;
+    /** Average validation confidence across enriched pages (0-1) */
+    avgConfidence: number;
+    /** Percentage of pages successfully enriched vs fallback (0-1) */
+    enrichmentRate: number;
   };
 }
