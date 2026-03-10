@@ -99,10 +99,24 @@ if (!ANTHROPIC_KEY) {
   } else {
     console.log("  Auth: OPEN (set WEBMAP_API_KEY to require auth)");
   }
-  serve({ fetch: app.fetch, port });
-  console.log(`WebMap API server running at http://localhost:${port}`);
-  console.log(`  POST /api/crawl          — Start a crawl`);
-  console.log(`  GET  /api/docs/:domain   — Get cached docs`);
-  console.log(`  GET  /api/status/:jobId  — Check job status`);
-  console.log(`  GET  /{url}              — URL-prefix proxy`);
+  const server = serve({ fetch: app.fetch, port });
+
+  server.on("listening", () => {
+    console.log(`WebMap API server running at http://localhost:${port}`);
+    console.log(`  POST /api/crawl          — Start a crawl`);
+    console.log(`  GET  /api/docs/:domain   — Get cached docs`);
+    console.log(`  GET  /api/status/:jobId  — Check job status`);
+    console.log(`  GET  /{url}              — URL-prefix proxy`);
+  });
+
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`ERROR: Port ${port} is already in use.`);
+      console.error(`  Kill the other process or set PORT=<other> to use a different port.`);
+      // Wait before exiting to prevent the file watcher from restarting in a tight crash loop
+      setTimeout(() => process.exit(1), 5000);
+      return;
+    }
+    throw err;
+  });
 })();
