@@ -12,7 +12,8 @@ AI-powered website documentation generator for AI agents. WebMap crawls websites
 - **CLI Tool** — Generate docs from the command line with configurable depth, page limits, and output directory
 - **Web Dashboard** — Next.js UI with three tabs: single-site generation, batch testing, and multi-method benchmarking
 - **MCP Server** — Model Context Protocol integration exposing `get_site_docs`, `get_page_docs`, and `get_workflow` tools
-- **Multi-Method Benchmarking** — Compare 5 different documentation injection strategies across multiple sites using Claude CUA
+- **Multi-Method Benchmarking** — Compare 7 different documentation injection strategies across multiple sites using Claude CUA
+- **Reliability Features** — Optional multi-run with majority vote, automated success verification via independent LLM judge, Wilson confidence intervals
 
 ## Multi-Method Benchmark System
 
@@ -27,6 +28,8 @@ The benchmark tests how different ways of providing documentation to a vision-ba
 | **Full Guide** | ~400 token guide with visual layout, navigation strategy, and site map in system prompt | ~400/turn |
 | **First Message** | Full docs injected in the first user message only (doesn't compound across turns) | One-time |
 | **Pre-Plan** | Uses docs to generate a task-specific step-by-step plan via a separate Claude call before CUA starts | One-time + ~150/turn |
+| **A11y Tree** | Text-only accessibility tree instead of screenshots (uses Haiku) | Variable |
+| **Hybrid** | Both accessibility tree + screenshots (Sonnet) | Variable |
 
 ### How It Works
 
@@ -36,9 +39,67 @@ The benchmark tests how different ways of providing documentation to a vision-ba
 4. **Benchmark Execution** — Every task is run with every selected method, using a real headless browser controlled by Claude CUA
 5. **Results** — Per-site and overall metrics: success rate, average tokens, duration, steps, and delta vs baseline
 
+### Reliability Features
+
+- **Multiple Runs** — Run each task N times per method. Success is determined by majority vote. Results include Wilson score confidence intervals.
+- **Automated Verification** — An independent LLM judge reviews the final screenshot + accessibility tree against the task's success criteria, overriding self-reported results when confident. Verification overhead (tokens/time) is tracked separately from CUA metrics.
+
 ### Key Insight
 
 System prompt content compounds — it's re-sent with every API call. Over 18+ steps, a 400-token guide costs ~7,200 extra input tokens. The first-message and pre-plan methods avoid this compounding effect.
+
+## Benchmark Results
+
+Results from a run across **20 real websites** (60 tasks each, 420 total) including developer.mozilla.org, Wikipedia, GitHub, Amazon, BBC, Khan Academy, eBay, and others. Each task is a realistic browser automation goal (search, navigate, extract information, multi-step workflows).
+
+### Overall Method Comparison
+
+| Method | Success Rate | Avg Tokens | Avg Duration | Avg Steps | vs Baseline |
+|---|---|---|---|---|---|
+| **Baseline** | 55.0% (33/60) | 120,339 | 119.5s | 10.1 | — |
+| **Micro Guide** | 53.3% (32/60) | 120,529 | 121.7s | 10.0 | -1.7pp |
+| **Full Guide** | 50.0% (30/60) | 131,191 | 124.3s | 10.5 | -5.0pp |
+| **First Message** | 58.3% (35/60) | 132,331 | 118.5s | 9.8 | +3.3pp |
+| **Pre-Plan** | 51.7% (31/60) | 105,497 | 107.0s | 9.1 | -3.3pp |
+| **A11y Tree** | **61.7%** (37/60) | 142,768 | **41.4s** | **5.0** | **+6.7pp** |
+| **Hybrid** | 48.3% (29/60) | 381,972 | 98.0s | 7.5 | -6.7pp |
+
+### Delta vs Baseline
+
+| Method | Success Delta | Token Delta | Speed |
+|---|---|---|---|
+| Micro Guide | -1.7pp | +0.2% | 0.98x |
+| Full Guide | -5.0pp | +9.0% | 0.96x |
+| First Message | +3.3pp | +10.0% | 1.01x |
+| Pre-Plan | -3.3pp | -12.3% | **1.12x** |
+| A11y Tree | **+6.7pp** | +18.6% | **2.88x** |
+| Hybrid | -6.7pp | +217.4% | 1.22x |
+
+### Key Findings
+
+1. **A11y Tree is the clear winner** — highest success rate (61.7%), fastest execution (2.88x baseline speed), and fewest steps (5.0 avg). It uses Haiku with text-only accessibility trees instead of screenshots, making it both cheaper per-step and more efficient.
+
+2. **System prompt injection hurts more than it helps** — Both Micro Guide (-1.7pp) and Full Guide (-5.0pp) performed *worse* than baseline. The compounding token cost of system prompt content across 10+ steps adds noise without enough navigation value.
+
+3. **First Message is the best doc injection approach** — +3.3pp improvement with no compounding cost. Docs are sent once and don't inflate subsequent turns.
+
+4. **Pre-Plan trades accuracy for speed** — 12.3% fewer tokens and 1.12x faster, but slightly lower success rate. The upfront planning step saves steps during execution.
+
+5. **Hybrid is expensive and underperforms** — 217% more tokens than baseline for lower success. Sending both accessibility trees and screenshots per turn is too much context.
+
+6. **Some sites are simply hard** — stackoverflow.com, reddit.com, npmjs.com, and hackernews all scored 0% across every method, likely due to anti-bot protections or aggressive JS rendering that blocks headless browsers.
+
+### Per-Site Heatmap
+
+Sites where docs made the biggest difference (best method vs baseline):
+
+| Site | Baseline | Best Method | Best Rate | Delta |
+|---|---|---|---|---|
+| www.amazon.com | 33.3% | Full Guide | 100.0% | +66.7pp |
+| www.bbc.com | 66.7% | First Message / Pre-Plan / A11y | 100.0% | +33.3pp |
+| www.khanacademy.org | 66.7% | Micro / First Msg / Pre-Plan / A11y | 100.0% | +33.3pp |
+| www.edx.org | 100.0% | Baseline / A11y | 100.0% | 0pp |
+| en.wikipedia.org | 100.0% | Baseline / Micro / Full / First / A11y | 100.0% | 0pp |
 
 ## Project Structure
 
