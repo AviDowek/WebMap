@@ -1,6 +1,6 @@
 # WebMap- An Experiment in Progress
 
-AI-powered website documentation generator for AI agents. WebMap crawls websites using Playwright, extracts interactive elements and accessibility trees, and uses Claude to generate comprehensive structured documentation. It includes a multi-method benchmarking system that measures how different documentation injection strategies affect vision-based browser agent (CUA) performance.
+AI-powered website documentation generator for AI agents. WebMap crawls websites using Playwright, extracts interactive elements and accessibility trees, and uses Claude to generate comprehensive structured documentation. It then has a multi-method benchmarking system that measures how different documentation injection strategies affect vision-based browser agent (CUA) performance.  The goal is identfying how each doc injection strategy affects results with the end goal of identfying one or more methods that can be used individually or combined, to improve on baseline CUA performance
 
 ## Update
 This shows promise and indicates multiple, promising ways of improving on baseline CUA performance.     Putting it on hold due to the high cost of testing, one day of $200+ in token costs is enough :)   
