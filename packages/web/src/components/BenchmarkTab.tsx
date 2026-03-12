@@ -421,6 +421,8 @@ export default function BenchmarkTab() {
         } else {
           const phaseLabel = d.currentSite && d.currentMethod
             ? `Testing ${d.currentSite} with ${DOC_METHOD_LABELS[d.currentMethod as DocMethod] || d.currentMethod}...`
+            : d.phase === "api-gen"
+            ? `Generating site APIs${d.currentSite ? ` for ${d.currentSite}` : ""}... (this takes a few minutes per site)`
             : d.status === "generating-docs"
             ? `Generating documentation${d.currentSite ? ` for ${d.currentSite}` : ""}...`
             : d.status === "generating-tasks"

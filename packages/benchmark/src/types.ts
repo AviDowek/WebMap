@@ -59,6 +59,14 @@ export interface TaskResult {
   verificationCostUsd?: number;
   /** Number of times the cascade method escalated from Haiku to Sonnet */
   cascadeEscalations?: number;
+  /** Number of successful site API function calls (programmatic method) */
+  apiCallCount?: number;
+  /** Number of fallback browser_action calls when API failed (programmatic method) */
+  visionFallbackCount?: number;
+  /** Names of site API functions called (programmatic method) */
+  siteApiFunctionsCalled?: string[];
+  /** Number of site API fallbacks (programmatic method) */
+  siteApiFallbacks?: number;
 }
 
 /** Aggregated result across multiple runs of the same task+method */
@@ -122,6 +130,10 @@ export interface AggregateMetrics {
     avgCostUsd: number;
     totalCostUsd: number;
   };
+  /** Fraction of tool calls that used site API vs fallback (programmatic method only) */
+  apiSuccessRate?: number;
+  /** Fraction of tool calls that fell back to vision/browser_action (programmatic method only) */
+  visionFallbackRate?: number;
 }
 
 // ─── Multi-Method Types ─────────────────────────────────────────────
@@ -137,7 +149,8 @@ export type DocMethod =
   | "hybrid"             // Both: accessibility tree + screenshots
   | "a11y-first-message" // A11y Tree (Haiku) + first-message doc injection
   | "haiku-vision"       // computer_use with Haiku model (3x cheaper than Sonnet)
-  | "cascade";           // Haiku vision → escalate to Sonnet when stuck
+  | "cascade"            // Haiku vision → escalate to Sonnet when stuck
+  | "programmatic";      // Pre-built site APIs (Haiku, text-only)
 
 export const ALL_DOC_METHODS: DocMethod[] = [
   "none",
@@ -150,6 +163,7 @@ export const ALL_DOC_METHODS: DocMethod[] = [
   "a11y-first-message",
   "haiku-vision",
   "cascade",
+  "programmatic",
 ];
 
 export const DOC_METHOD_LABELS: Record<DocMethod, string> = {
@@ -163,6 +177,7 @@ export const DOC_METHOD_LABELS: Record<DocMethod, string> = {
   "a11y-first-message": "A11y Tree + First Message Docs (Haiku)",
   "haiku-vision": "Haiku Vision (computer_use, 3x cheaper)",
   "cascade": "Cascade (Haiku→Sonnet on stuck)",
+  "programmatic": "Programmatic (site APIs, Haiku)",
 };
 
 export interface MethodResult {

@@ -40,7 +40,7 @@ import {
 } from "../state.js";
 
 // Methods that don't need docs at all — skip crawling when only these are selected
-const DOC_INDEPENDENT_METHODS = new Set<DocMethod>(["none", "a11y-tree", "haiku-vision"]);
+const DOC_INDEPENDENT_METHODS = new Set<DocMethod>(["none", "a11y-tree", "haiku-vision", "cascade", "programmatic"]);
 
 const routes = new Hono();
 
@@ -90,7 +90,7 @@ routes.post("/api/benchmark/datasets/estimate", async (c) => {
   const HAIKU_OUTPUT = 5.0 / 1_000_000;
   const SONNET_INPUT = 3.0 / 1_000_000;
   const SONNET_OUTPUT = 15.0 / 1_000_000;
-  const HAIKU_METHODS = new Set(["a11y-tree", "haiku-vision", "a11y-first-message"]);
+  const HAIKU_METHODS = new Set(["a11y-tree", "haiku-vision", "a11y-first-message", "programmatic"]);
   // Cascade: blended ~60% Haiku + 40% Sonnet
   const INPUT_RATIO = 0.95;
   const OUTPUT_RATIO = 0.05;

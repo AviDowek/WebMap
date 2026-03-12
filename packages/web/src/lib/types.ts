@@ -1,6 +1,6 @@
 // ─── Types ───────────────────────────────────────────────────────────
 
-export type Tab = "generate" | "batch" | "benchmark";
+export type Tab = "generate" | "batch" | "benchmark" | "apis";
 
 export interface CrawlStatus {
   state: "idle" | "crawling" | "done" | "error";
@@ -44,6 +44,8 @@ export interface BenchmarkMetrics {
   avgSteps: number;
   avgCostUsd?: number;
   totalCostUsd?: number;
+  apiSuccessRate?: number;
+  visionFallbackRate?: number;
 }
 
 export interface BenchmarkStatus {
@@ -96,7 +98,8 @@ export type DocMethod =
   | "hybrid"
   | "a11y-first-message"
   | "haiku-vision"
-  | "cascade";
+  | "cascade"
+  | "programmatic";
 
 export interface MethodResultData {
   method: DocMethod;
@@ -111,6 +114,8 @@ export interface MethodResultData {
     cacheReadTokens?: number;
     cacheCreationTokens?: number;
     cascadeEscalations?: number;
+    apiCallCount?: number;
+    visionFallbackCount?: number;
   }>;
   metrics: BenchmarkMetrics;
 }

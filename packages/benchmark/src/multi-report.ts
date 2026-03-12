@@ -43,6 +43,7 @@ const METHOD_SHORT: Record<DocMethod, string> = {
   "a11y-first-message": "A11y+FirstMsg",
   "haiku-vision": "Haiku Vision",
   "cascade": "Cascade",
+  "programmatic": "Programmatic",
 };
 
 /**
@@ -67,17 +68,24 @@ export function generateMultiMethodReport(
   // ─── Overall Comparison Table ──────────────────────────────────
   lines.push("## Overall Method Comparison");
   lines.push("");
+  const hasProgrammatic = result.methods.includes("programmatic");
+  const apiColumns = hasProgrammatic ? " API % | Fallback % |" : "";
+  const apiDashes = hasProgrammatic ? "-------|------------|" : "";
+
   lines.push(
-    "| Method | Success Rate | Avg Tokens | Avg Steps | Avg Duration | Cost/Task | Total Cost |"
+    `| Method | Success Rate | Avg Tokens | Avg Steps | Avg Duration | Cost/Task | Total Cost |${apiColumns}`
   );
   lines.push(
-    "|--------|-------------|------------|-----------|--------------|-----------|------------|"
+    `|--------|-------------|------------|-----------|--------------|-----------|------------|${apiDashes}`
   );
 
   for (const mr of result.overall) {
     const m = mr.metrics;
+    const apiCols = hasProgrammatic
+      ? ` ${m.apiSuccessRate != null ? (m.apiSuccessRate * 100).toFixed(0) + "%" : "—"} | ${m.visionFallbackRate != null ? (m.visionFallbackRate * 100).toFixed(0) + "%" : "—"} |`
+      : "";
     lines.push(
-      `| ${METHOD_SHORT[mr.method]} | ${(m.successRate * 100).toFixed(1)}% | ${m.avgTokensPerTask.toFixed(0)} | ${m.avgSteps.toFixed(1)} | ${formatDuration(m.avgDurationMs)} | ${formatCost(m.avgCostUsd)} | ${formatCost(m.totalCostUsd)} |`
+      `| ${METHOD_SHORT[mr.method]} | ${(m.successRate * 100).toFixed(1)}% | ${m.avgTokensPerTask.toFixed(0)} | ${m.avgSteps.toFixed(1)} | ${formatDuration(m.avgDurationMs)} | ${formatCost(m.avgCostUsd)} | ${formatCost(m.totalCostUsd)} |${apiCols}`
     );
   }
 
@@ -128,8 +136,11 @@ export function generateMultiMethodReport(
             const cascadeStr = tr.cascadeEscalations !== undefined && tr.cascadeEscalations > 0
               ? ` (↑${tr.cascadeEscalations})`
               : "";
+            const apiStr = tr.apiCallCount != null && tr.visionFallbackCount != null
+              ? ` | ${tr.apiCallCount} API, ${tr.visionFallbackCount} fallback`
+              : "";
             lines.push(
-              `| ${METHOD_SHORT[mr.method]} | ${tr.success ? "✓ PASS" : "✗ FAIL"} | ${tr.steps}${cascadeStr} | ${tr.tokensUsed.toLocaleString()} | ${costStr} | ${formatDuration(tr.durationMs)} |`
+              `| ${METHOD_SHORT[mr.method]} | ${tr.success ? "✓ PASS" : "✗ FAIL"} | ${tr.steps}${cascadeStr} | ${tr.tokensUsed.toLocaleString()} | ${costStr} | ${formatDuration(tr.durationMs)}${apiStr} |`
             );
           }
         }
@@ -214,15 +225,20 @@ export function printMultiMethodSummary(
   console.log("");
 
   // Header
+  const hasProgCol = result.methods.includes("programmatic");
+  const apiHeader = hasProgCol ? ` ${padLeft("API %", 7)}` : "";
   console.log(
-    `  ${padRight("Method", 16)} ${padLeft("Success", 9)} ${padLeft("Tokens", 10)} ${padLeft("Steps", 7)} ${padLeft("Duration", 10)} ${padLeft("Cost/Task", 10)} ${padLeft("Total", 9)}`
+    `  ${padRight("Method", 16)} ${padLeft("Success", 9)} ${padLeft("Tokens", 10)} ${padLeft("Steps", 7)} ${padLeft("Duration", 10)} ${padLeft("Cost/Task", 10)} ${padLeft("Total", 9)}${apiHeader}`
   );
-  console.log("  " + "─".repeat(76));
+  console.log("  " + "─".repeat(hasProgCol ? 84 : 76));
 
   for (const mr of result.overall) {
     const m = mr.metrics;
+    const apiCol = hasProgCol
+      ? ` ${padLeft(m.apiSuccessRate != null ? (m.apiSuccessRate * 100).toFixed(0) + "%" : "—", 7)}`
+      : "";
     console.log(
-      `  ${padRight(METHOD_SHORT[mr.method], 16)} ${padLeft((m.successRate * 100).toFixed(1) + "%", 9)} ${padLeft(m.avgTokensPerTask.toFixed(0), 10)} ${padLeft(m.avgSteps.toFixed(1), 7)} ${padLeft(formatDuration(m.avgDurationMs), 10)} ${padLeft(formatCost(m.avgCostUsd), 10)} ${padLeft(formatCost(m.totalCostUsd), 9)}`
+      `  ${padRight(METHOD_SHORT[mr.method], 16)} ${padLeft((m.successRate * 100).toFixed(1) + "%", 9)} ${padLeft(m.avgTokensPerTask.toFixed(0), 10)} ${padLeft(m.avgSteps.toFixed(1), 7)} ${padLeft(formatDuration(m.avgDurationMs), 10)} ${padLeft(formatCost(m.avgCostUsd), 10)} ${padLeft(formatCost(m.totalCostUsd), 9)}${apiCol}`
     );
   }
 

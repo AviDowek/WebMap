@@ -28,6 +28,7 @@ export const DOC_METHOD_LABELS: Record<DocMethod, string> = {
   "a11y-first-message": "A11y+FirstMsg",
   "haiku-vision": "Haiku Vision",
   "cascade": "Cascade",
+  "programmatic": "Programmatic",
 };
 
 export const DOC_METHOD_DESCRIPTIONS: Record<DocMethod, string> = {
@@ -41,11 +42,12 @@ export const DOC_METHOD_DESCRIPTIONS: Record<DocMethod, string> = {
   "a11y-first-message": "Combines A11y Tree (Haiku, text-only, 5.0 avg steps) with first-message site context injection. Orthogonal advantages: semantic navigation + site awareness. One-time doc cost, no compounding.",
   "haiku-vision": "Claude Haiku 4.5 with computer_use tool (vision/screenshot mode). 3x cheaper than Sonnet vision. Haiku 4.5 supports computer_use and achieves ~50% on CUA benchmarks.",
   "cascade": "Starts with Haiku vision (cheap), detects stuck state (same URL 3 steps or 2+ errors), escalates to Sonnet. Blended cost ~40% lower than pure Sonnet at similar or better accuracy.",
+  "programmatic": "Pre-built site-specific API functions discovered via crawling. Uses Haiku (text-only). Agent calls typed functions instead of screenshots. Falls back to browser_action if APIs fail. APIs cached per domain (~$1.65 one-time generation cost).",
 };
 
 export const ALL_DOC_METHODS: DocMethod[] = [
   "none", "micro-guide", "full-guide", "first-message", "pre-plan",
-  "a11y-tree", "hybrid", "a11y-first-message", "haiku-vision", "cascade",
+  "a11y-tree", "hybrid", "a11y-first-message", "haiku-vision", "cascade", "programmatic",
 ];
 
 export const METHOD_COLORS: Record<DocMethod, string> = {
@@ -59,6 +61,7 @@ export const METHOD_COLORS: Record<DocMethod, string> = {
   "a11y-first-message": "#f97316",
   "haiku-vision": "#84cc16",
   "cascade": "#a78bfa",
+  "programmatic": "#14b8a6",
 };
 
 /** Average tokens per task per method (from benchmark results) — used for pre-run cost estimates */
@@ -73,6 +76,7 @@ export const METHOD_AVG_TOKENS: Record<DocMethod, number> = {
   "a11y-first-message": 145_000,
   "haiku-vision": 110_000,
   "cascade": 115_000,
+  "programmatic": 80_000,
 };
 
 /** True if the method uses Haiku model (cheaper) — used for cost estimation */
@@ -87,4 +91,5 @@ export const METHOD_IS_HAIKU: Record<DocMethod, boolean> = {
   "haiku-vision": true,
   "a11y-first-message": true,
   "cascade": false, // blended ~60% Haiku + 40% Sonnet
+  "programmatic": true,
 };

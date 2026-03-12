@@ -31,6 +31,13 @@ export function computeMetrics(results: TaskResult[]): AggregateMetrics {
   const totalVerificationMs = results.reduce((s, r) => s + (r.verificationDurationMs ?? 0), 0);
   const totalVerificationCostUsd = results.reduce((s, r) => s + (r.verificationCostUsd ?? 0), 0);
 
+  // API vs fallback metrics (programmatic method)
+  const totalApiCalls = results.reduce((s, r) => s + (r.apiCallCount ?? 0), 0);
+  const totalVisionFallbacks = results.reduce((s, r) => s + (r.visionFallbackCount ?? 0), 0);
+  const totalToolCalls = totalApiCalls + totalVisionFallbacks;
+  const apiSuccessRate = totalToolCalls > 0 ? totalApiCalls / totalToolCalls : undefined;
+  const visionFallbackRate = totalToolCalls > 0 ? totalVisionFallbacks / totalToolCalls : undefined;
+
   return {
     totalTasks: total,
     successRate,
@@ -47,6 +54,8 @@ export function computeMetrics(results: TaskResult[]): AggregateMetrics {
       avgCostUsd: totalVerificationCostUsd / verifiedResults.length,
       totalCostUsd: totalVerificationCostUsd,
     } : undefined,
+    apiSuccessRate,
+    visionFallbackRate,
   };
 }
 

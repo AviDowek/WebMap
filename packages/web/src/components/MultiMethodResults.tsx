@@ -174,6 +174,28 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
             )}
           </div>
         )}
+        {/* API Execution card — only shown when programmatic method is in results */}
+        {(() => {
+          const progMethod = result.overall.find((m) => m.method === "programmatic");
+          if (!progMethod || progMethod.metrics.apiSuccessRate == null) return null;
+          const apiPct = (progMethod.metrics.apiSuccessRate * 100).toFixed(0);
+          const fallbackPct = ((progMethod.metrics.visionFallbackRate ?? 0) * 100).toFixed(0);
+          return (
+            <div style={cardStyle}>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>API Execution</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#14b8a6" }}>
+                {apiPct}% API calls
+              </div>
+              <div style={{ fontSize: 13, color: "#3b82f6", marginTop: 2 }}>
+                {fallbackPct}% Vision fallback
+              </div>
+              <div style={{ marginTop: 8, height: 8, borderRadius: 4, overflow: "hidden", backgroundColor: "#222", display: "flex" }}>
+                <div style={{ width: `${apiPct}%`, backgroundColor: "#22c55e", transition: "width 0.3s" }} />
+                <div style={{ width: `${fallbackPct}%`, backgroundColor: "#3b82f6", transition: "width 0.3s" }} />
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Overall Method Comparison */}
@@ -211,6 +233,7 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
               <th style={{ textAlign: "center", padding: "10px 12px" }}>Avg Steps</th>
               {hasCostData && <th style={{ textAlign: "center", padding: "10px 12px" }}>Cost/Task</th>}
               {hasCostData && <th style={{ textAlign: "center", padding: "10px 12px" }}>Total Cost</th>}
+              {result.methods.includes("programmatic") && <th style={{ textAlign: "center", padding: "10px 12px" }}>API %</th>}
               <th style={{ textAlign: "center", padding: "10px 12px" }}>Score</th>
               {baselineOverall && <th style={{ textAlign: "center", padding: "10px 12px" }}>vs Baseline</th>}
             </tr>
@@ -261,6 +284,11 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                   {hasCostData && (
                     <td style={{ textAlign: "center", padding: "10px 12px", color: "#666", fontSize: 12 }}>
                       {formatCost(mr.metrics.totalCostUsd)}
+                    </td>
+                  )}
+                  {result.methods.includes("programmatic") && (
+                    <td style={{ textAlign: "center", padding: "10px 12px", color: mr.metrics.apiSuccessRate != null ? "#14b8a6" : "#555" }}>
+                      {mr.metrics.apiSuccessRate != null ? `${(mr.metrics.apiSuccessRate * 100).toFixed(0)}%` : "—"}
                     </td>
                   )}
                   <td style={{ textAlign: "center", padding: "10px 12px", fontWeight: 600, color: isTopScore ? "#22c55e" : "#aaa" }}>
@@ -441,6 +469,11 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                                     {hasCascade && (
                                       <span style={{ color: "#a78bfa", fontSize: 10, display: "block" }} title={`Escalated to Sonnet ${task.cascadeEscalations}x`}>
                                         ↑{task.cascadeEscalations}×
+                                      </span>
+                                    )}
+                                    {task?.apiCallCount != null && task.apiCallCount + (task.visionFallbackCount ?? 0) > 0 && (
+                                      <span style={{ color: "#14b8a6", fontSize: 10, display: "block" }} title={`${task.apiCallCount} API, ${task.visionFallbackCount ?? 0} fallback`}>
+                                        {task.apiCallCount}A/{task.visionFallbackCount ?? 0}F
                                       </span>
                                     )}
                                   </td>

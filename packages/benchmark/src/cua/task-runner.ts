@@ -20,6 +20,11 @@ import { executeComputerAction } from "./actions.js";
 import { A11Y_BROWSER_TOOL, executeA11yAction } from "./a11y-actions.js";
 import { verifyTaskSuccess } from "./verification.js";
 
+// Programmatic mode imports (lazy — only used when method === "programmatic")
+import type { DomainAPI } from "@webmap/api-gen";
+import { buildToolsForStep, handleDiscoverActions, executeSiteAction } from "@webmap/api-gen";
+import type { FailureTracker, FallbackCapture } from "@webmap/api-gen";
+
 // ─── Model pricing (USD per token) ──────────────────────────────────
 // Cache reads cost 10% of normal input; cache writes cost 125% of normal input.
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
@@ -84,6 +89,12 @@ function buildSystemBlock(text: string): Parameters<typeof Anthropic.prototype.m
 export interface RunTaskOptions {
   /** Enable automated success verification via independent LLM judge */
   verify?: boolean;
+  /** DomainAPI for programmatic method */
+  siteApi?: DomainAPI;
+  /** Failure tracker for programmatic method learning loop */
+  failureTracker?: FailureTracker;
+  /** Fallback capture for programmatic method learning loop */
+  fallbackCapture?: FallbackCapture;
 }
 
 export async function runTask(
@@ -108,6 +119,7 @@ export async function runTask(
   const isHybrid = method === "hybrid";
   const isHaikuVision = method === "haiku-vision";
   const isCascade = method === "cascade";
+  const isProgrammatic = method === "programmatic";
   const useA11y = isA11yOnly || isHybrid;
 
   const context = await browser.newContext({
@@ -115,9 +127,14 @@ export async function runTask(
   });
   const page = await context.newPage();
 
+  // Programmatic mode tracking
+  let apiCallCount = 0;
+  let visionFallbackCount = 0;
+  const siteApiFunctionsCalled: string[] = [];
+
   // Mutable model for cascade support
   let currentModel: string;
-  if (isA11yOnly || isHaikuVision || isCascade) {
+  if (isA11yOnly || isHaikuVision || isCascade || isProgrammatic) {
     currentModel = "claude-haiku-4-5-20251001";
   } else {
     currentModel = "claude-sonnet-4-20250514";
@@ -133,6 +150,24 @@ export async function runTask(
 
     const baseInstructions = `When you have completed the task, respond with a text message containing "TASK_COMPLETE" and a brief summary.
 If you cannot complete the task, respond with "TASK_FAILED" and the reason.`;
+
+    // ─── Programmatic mode: entirely different execution path ─────
+    if (isProgrammatic && options?.siteApi) {
+      const programmaticResult = await runProgrammaticTask(
+        client, page, task, options.siteApi, baseInstructions,
+        actions, options.failureTracker, options.fallbackCapture, options.verify
+      );
+      await context.close();
+      return {
+        ...programmaticResult,
+        taskId: task.id,
+        estimatedCostUsd: programmaticResult.estimatedCostUsd,
+        apiCallCount: programmaticResult.apiCallCount,
+        visionFallbackCount: programmaticResult.visionFallbackCount,
+        siteApiFunctionsCalled: programmaticResult.siteApiFunctionsCalled,
+        siteApiFallbacks: programmaticResult.visionFallbackCount,
+      };
+    }
 
     // Build system prompt based on method
     let systemPromptText: string;
@@ -444,5 +479,304 @@ Analyze the screenshots to understand the page and interact with elements to com
     cacheCreationTokens: cacheCreationTokens > 0 ? cacheCreationTokens : undefined,
     verificationCostUsd,
     cascadeEscalations: isCascade ? cascadeEscalations : undefined,
+  };
+}
+
+// ─── Programmatic mode execution ───────────────────────────────────
+
+interface ProgrammaticResult {
+  success: boolean;
+  steps: number;
+  tokensUsed: number;
+  durationMs: number;
+  error?: string;
+  actions: string[];
+  estimatedCostUsd: number;
+  apiCallCount: number;
+  visionFallbackCount: number;
+  siteApiFunctionsCalled: string[];
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  verified?: boolean;
+  selfReportedSuccess?: boolean;
+  verificationReason?: string;
+  verificationTokensUsed?: number;
+  verificationDurationMs?: number;
+  verificationCostUsd?: number;
+}
+
+async function runProgrammaticTask(
+  client: Anthropic,
+  page: import("playwright").Page,
+  task: BenchmarkTask,
+  domainApi: DomainAPI,
+  baseInstructions: string,
+  actions: string[],
+  failureTracker?: FailureTracker,
+  fallbackCapture?: FallbackCapture,
+  verify?: boolean
+): Promise<ProgrammaticResult> {
+  const startTime = Date.now();
+  let tokensUsed = 0;
+  let estimatedCostUsd = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
+  let success = false;
+  let error: string | undefined;
+  let apiCallCount = 0;
+  let visionFallbackCount = 0;
+  const siteApiFunctionsCalled: string[] = [];
+  const currentModel = "claude-haiku-4-5-20251001";
+
+  const systemPromptText = `You are a browser automation agent with access to pre-built site-specific functions.
+Use these functions to complete tasks efficiently. Each function performs verified
+actions on this website. Prefer site functions over fallback_browser_action.
+If a function fails, try fallback_browser_action with role/name from the error.
+Use discover_actions to find functions on other pages.
+
+${baseInstructions}`;
+
+  const systemBlock = buildSystemBlock(systemPromptText);
+
+  // Build initial tools based on current URL
+  let { tools, actionMap, systemAddendum } = buildToolsForStep(domainApi, page.url());
+
+  // Initial a11y snapshot
+  const a11yTree = truncateA11y(await getA11ySnapshot(page));
+  const taskText = `Task: ${task.instruction}\nSuccess criteria: ${task.successCriteria}\n\n${systemAddendum}\n\nCurrent page accessibility tree:\n${a11yTree}`;
+
+  const messages: Parameters<typeof client.messages.create>[0]["messages"] = [
+    { role: "user", content: [{ type: "text", text: taskText }] },
+  ];
+
+  for (let step = 0; step < MAX_STEPS; step++) {
+    const response = await withRateLimitRetry(() =>
+      client.messages.create({
+        model: currentModel,
+        max_tokens: 4096,
+        temperature: 0.3,
+        system: systemBlock as Parameters<typeof client.messages.create>[0]["system"],
+        tools: tools as Parameters<typeof client.messages.create>[0]["tools"],
+        messages,
+      })
+    );
+
+    // Accumulate tokens
+    tokensUsed +=
+      (response.usage?.input_tokens || 0) +
+      (response.usage?.output_tokens || 0) +
+      (response.usage?.cache_read_input_tokens || 0) +
+      (response.usage?.cache_creation_input_tokens || 0);
+
+    const stepCost = computeStepCost(response.usage as Parameters<typeof computeStepCost>[0], currentModel);
+    estimatedCostUsd += stepCost.cost;
+    cacheReadTokens += stepCost.cacheRead;
+    cacheCreationTokens += stepCost.cacheCreation;
+
+    messages.push({ role: "assistant", content: response.content });
+
+    const toolUseBlocks = response.content.filter(
+      (b): b is { type: "tool_use"; id: string; name: string; input: unknown } =>
+        b.type === "tool_use"
+    );
+
+    // Check for completion
+    if (toolUseBlocks.length === 0 || response.stop_reason === "end_turn") {
+      const textBlocks = response.content.filter((b) => b.type === "text");
+      const fullText = textBlocks.map((b) => (b as unknown as { text: string }).text).join(" ");
+
+      if (fullText.includes("TASK_COMPLETE")) {
+        success = true;
+        actions.push(`Step ${step + 1}: TASK_COMPLETE`);
+      } else if (fullText.includes("TASK_FAILED")) {
+        error = fullText;
+        actions.push(`Step ${step + 1}: TASK_FAILED`);
+      } else {
+        actions.push(`Step ${step + 1}: Agent stopped without completion signal`);
+      }
+      break;
+    }
+
+    // Execute tool calls
+    const toolResults: Array<{ type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }> = [];
+
+    for (const toolUse of toolUseBlocks) {
+      const input = toolUse.input as Record<string, unknown>;
+
+      if (toolUse.name === "discover_actions") {
+        // Meta-tool: search for actions
+        actions.push(`Step ${step + 1}: discover_actions("${input.query}")`);
+        const result = handleDiscoverActions(domainApi, input);
+        toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: result });
+        continue;
+      }
+
+      if (toolUse.name === "fallback_browser_action") {
+        // Fallback to a11y browser action
+        visionFallbackCount++;
+        const actionStr = `${input.action}${input.role ? ` [${input.role}]` : ""}${input.name ? ` "${input.name}"` : ""}${input.text ? ` text="${input.text}"` : ""}`;
+        actions.push(`Step ${step + 1}: [FALLBACK] ${actionStr}`);
+
+        // Track fallback for learning
+        fallbackCapture?.recordFallbackStep(input);
+
+        try {
+          await executeA11yAction(page, input);
+          await page.waitForTimeout(500);
+          const snapshot = truncateA11y(await getA11ySnapshot(page));
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: `Action succeeded.\n\nPage accessibility tree:\n${snapshot}`,
+          });
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          actions.push(`  → Error: ${errMsg}`);
+          const snapshot = await getA11ySnapshot(page).catch(() => "(unavailable)");
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: `Action failed: ${errMsg}\n\nPage accessibility tree:\n${truncateA11y(snapshot)}`,
+            is_error: true,
+          });
+        }
+        continue;
+      }
+
+      // Site API function call
+      const action = actionMap.get(toolUse.name);
+      if (action) {
+        apiCallCount++;
+        siteApiFunctionsCalled.push(toolUse.name);
+        actions.push(`Step ${step + 1}: [API] ${toolUse.name}(${JSON.stringify(input).slice(0, 100)})`);
+
+        // Flush any pending fallback capture (new API call = end of fallback sequence)
+        fallbackCapture?.flushPending();
+
+        try {
+          const result = await executeSiteAction(page, action, input);
+          await page.waitForTimeout(500);
+
+          if (result.success) {
+            failureTracker?.recordSuccess(action.id);
+            const snapshot = truncateA11y(result.resultSnapshot);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: `Function executed successfully.\n\nPage accessibility tree:\n${snapshot}`,
+            });
+          } else {
+            // API function failed — mark failure and prepare for fallback
+            failureTracker?.recordFailure({
+              actionId: action.id,
+              actionName: action.name,
+              error: result.error || "Unknown error",
+              timestamp: new Date().toISOString(),
+              pageUrl: page.url(),
+            });
+            fallbackCapture?.markFailure(action.id, action.name, result.error || "Unknown error", page.url());
+
+            const snapshot = truncateA11y(result.resultSnapshot);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: `Function failed: ${result.error}\n\nTry using fallback_browser_action instead.\n\nPage accessibility tree:\n${snapshot}`,
+              is_error: true,
+            });
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          actions.push(`  → Error: ${errMsg}`);
+          failureTracker?.recordFailure({
+            actionId: action.id,
+            actionName: action.name,
+            error: errMsg,
+            timestamp: new Date().toISOString(),
+            pageUrl: page.url(),
+          });
+          fallbackCapture?.markFailure(action.id, action.name, errMsg, page.url());
+
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: `Function error: ${errMsg}\n\nTry using fallback_browser_action instead.`,
+            is_error: true,
+          });
+        }
+      } else {
+        // Unknown tool name
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: `Unknown function "${toolUse.name}". Use discover_actions to find available functions.`,
+          is_error: true,
+        });
+      }
+    }
+
+    messages.push({ role: "user", content: toolResults });
+
+    // Rebuild tools if URL changed (page navigation)
+    const newToolSet = buildToolsForStep(domainApi, page.url());
+    tools = newToolSet.tools;
+    actionMap = newToolSet.actionMap;
+  }
+
+  // Flush any pending fallback capture
+  fallbackCapture?.flushPending();
+
+  const cuaDurationMs = Date.now() - startTime;
+
+  // Verification (same as non-programmatic)
+  let verified: boolean | undefined;
+  let selfReportedSuccess: boolean | undefined;
+  let verificationReason: string | undefined;
+  let verificationTokensUsed: number | undefined;
+  let verificationDurationMs: number | undefined;
+  let verificationCostUsd: number | undefined;
+
+  if (verify) {
+    selfReportedSuccess = success;
+    const verifyStart = Date.now();
+    try {
+      const verification = await verifyTaskSuccess(client, page, task, success);
+      verified = true;
+      verificationReason = verification.reason;
+      verificationTokensUsed = verification.tokensUsed;
+      verificationDurationMs = Date.now() - verifyStart;
+
+      const sonnetPricing = MODEL_PRICING["claude-sonnet-4-20250514"];
+      verificationCostUsd =
+        verification.inputTokens * sonnetPricing.input +
+        verification.outputTokens * sonnetPricing.output;
+
+      if (verification.confidence >= 0.6 && verification.success !== success) {
+        success = verification.success;
+      }
+    } catch (e) {
+      verificationReason = `Verification failed: ${e instanceof Error ? e.message : String(e)}`;
+      verificationDurationMs = Date.now() - verifyStart;
+    }
+  }
+
+  return {
+    success,
+    steps: actions.length,
+    tokensUsed,
+    durationMs: cuaDurationMs,
+    error,
+    actions,
+    estimatedCostUsd,
+    apiCallCount,
+    visionFallbackCount,
+    siteApiFunctionsCalled,
+    cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+    cacheCreationTokens: cacheCreationTokens > 0 ? cacheCreationTokens : undefined,
+    verified,
+    selfReportedSuccess,
+    verificationReason,
+    verificationTokensUsed,
+    verificationDurationMs,
+    verificationCostUsd,
   };
 }

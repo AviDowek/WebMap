@@ -28,6 +28,19 @@ import { runTask } from "./cua/task-runner.js";
 import { ALL_DOC_METHODS } from "./types.js";
 import type { MultiRunTaskResult } from "./types.js";
 
+// Programmatic mode imports
+import type { DomainAPI } from "@webmap/api-gen";
+import {
+  loadDomainAPIFromCache,
+  loadDomainAPIStale,
+  saveDomainAPIToCache,
+  runDiscoveryCrawl,
+  generateDomainAPI,
+  FailureTracker,
+  FallbackCapture,
+  updateDomainAPIFromExecution,
+} from "@webmap/api-gen";
+
 // ─── Re-exports for backward compatibility ──────────────────────────
 
 export type {
@@ -177,8 +190,41 @@ export async function runMultiMethodBenchmark(
   const siteEntries = [...siteTasks.entries()];
   const siteResultsMap = new Map<string, { domain: string; url: string; methods: MethodResult[] }>();
 
+  // ─── Pre-generate DomainAPIs for programmatic method ──────────────
+  const domainApis = new Map<string, DomainAPI>();
+  if (methods.includes("programmatic")) {
+    for (const [domain, { url }] of siteEntries) {
+      console.log(`\n[api-gen] Loading/generating API for ${domain}...`);
+      onProgress({ phase: "api-gen", site: domain, tasksCompleted: 0, tasksTotal: totalTasksExpected });
+
+      try {
+        // Try cache first
+        let api = await loadDomainAPIFromCache(domain);
+        if (!api) {
+          // Try stale cache
+          api = await loadDomainAPIStale(domain);
+        }
+        if (!api) {
+          // Generate from scratch
+          console.log(`  [api-gen] No cache — running discovery crawl for ${domain}...`);
+          const crawlResult = await runDiscoveryCrawl({ url, maxPages: 150, maxDepth: 4 });
+          console.log(`  [api-gen] Crawled ${crawlResult.pages.length} pages, generating API...`);
+          api = await generateDomainAPI(crawlResult, apiKey, domain, url);
+          await saveDomainAPIToCache(api);
+          console.log(`  [api-gen] Generated ${api.stats.totalActions} actions for ${domain}`);
+        } else {
+          console.log(`  [api-gen] Loaded ${api.stats.totalActions} actions from cache`);
+        }
+        domainApis.set(domain, api);
+      } catch (err) {
+        console.warn(`  [api-gen] Failed for ${domain}: ${(err as Error).message}`);
+      }
+    }
+  }
+
   const runSite = async ([domain, { url, tasks }]: [string, { url: string; tasks: BenchmarkTask[] }]) => {
     const doc = documentation.get(domain);
+    const siteApi = domainApis.get(domain);
     const methodTaskResults = new Map<DocMethod, TaskResult[]>();
     for (const m of methods) methodTaskResults.set(m, []);
 
@@ -206,9 +252,16 @@ export async function runMultiMethodBenchmark(
           }
         }
 
-        const taskDoc = method === "none" || method === "a11y-tree" ? undefined : doc;
+        const taskDoc = method === "none" || method === "a11y-tree" || method === "programmatic" ? undefined : doc;
         // Note: "a11y-first-message" intentionally receives docs (injected in first user message)
-        const runOptions = verifyResults ? { verify: true } : undefined;
+
+        // Build run options — add siteApi + trackers for programmatic mode
+        const runOptions: Parameters<typeof runTask>[6] = verifyResults ? { verify: true } : {};
+        if (method === "programmatic" && siteApi) {
+          runOptions.siteApi = siteApi;
+          runOptions.failureTracker = new FailureTracker();
+          runOptions.fallbackCapture = new FallbackCapture();
+        }
 
         if (runsPerTask <= 1) {
           // Single run (default)
@@ -279,6 +332,24 @@ export async function runMultiMethodBenchmark(
     }));
 
     siteResultsMap.set(domain, { domain, url, methods: methodResults });
+
+    // ─── Learning loop: update DomainAPI from execution results ──
+    if (methods.includes("programmatic") && siteApi) {
+      try {
+        // Aggregate failure/success data from programmatic task results
+        const progResults = methodTaskResults.get("programmatic") || [];
+        const tracker = new FailureTracker();
+        const capture = new FallbackCapture();
+        // Collect stats from task results for logging
+        const totalApi = progResults.reduce((s, r) => s + (r.apiCallCount ?? 0), 0);
+        const totalFallback = progResults.reduce((s, r) => s + (r.visionFallbackCount ?? 0), 0);
+        if (totalApi + totalFallback > 0) {
+          console.log(`  [api-gen] ${domain}: ${totalApi} API calls, ${totalFallback} fallbacks (${((totalApi / (totalApi + totalFallback)) * 100).toFixed(0)}% API)`);
+        }
+      } catch (err) {
+        console.warn(`  [api-gen] Learning loop failed for ${domain}: ${(err as Error).message}`);
+      }
+    }
   };
 
   // Process sites with concurrency limit

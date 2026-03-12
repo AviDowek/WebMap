@@ -6,6 +6,7 @@ import { tabStyle } from "../lib/styles";
 import GenerateTab from "../components/GenerateTab";
 import BatchTab from "../components/BatchTab";
 import BenchmarkTab from "../components/BenchmarkTab";
+import APIBrowser from "../components/APIBrowser";
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("generate");
@@ -48,11 +49,15 @@ export default function Home() {
         <button style={tabStyle(tab === "benchmark")} onClick={() => setTab("benchmark")}>
           Benchmark
         </button>
+        <button style={tabStyle(tab === "apis")} onClick={() => setTab("apis")}>
+          APIs
+        </button>
       </div>
 
       {tab === "generate" && <GenerateTab />}
       {tab === "batch" && <BatchTab />}
       {tab === "benchmark" && <BenchmarkTab />}
+      {tab === "apis" && <APIBrowser />}
     </main>
   );
 }

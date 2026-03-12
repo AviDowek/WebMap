@@ -282,9 +282,13 @@ export function loadActiveJobsFromStore(): void {
     batchJobs.set(id, batch);
   }
 
-  // Load benchmark jobs
+  // Load benchmark jobs — mark any "running" jobs as error (work was lost on restart)
   const benchmarks = activeBenchmarksStore.data as Record<string, BenchmarkState & { completedAt?: number }>;
   for (const [id, bench] of Object.entries(benchmarks)) {
+    if (bench.status !== "done" && bench.status !== "error") {
+      bench.status = "error";
+      bench.error = "Server restarted while benchmark was running. Please start a new benchmark.";
+    }
     benchmarkJobs.set(id, bench);
   }
 

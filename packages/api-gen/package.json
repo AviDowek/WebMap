@@ -1,22 +1,22 @@
 {
-  "name": "@webmap/api",
+  "name": "@webmap/api-gen",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
   "scripts": {
     "build": "tsc",
-    "dev": "node --env-file=../../.env dist/index.js",
-    "start": "node --env-file=../../.env dist/index.js",
-    "test": "node --test dist/**/*.test.js"
+    "dev": "tsc --watch"
   },
   "dependencies": {
     "@webmap/core": "*",
-    "@webmap/benchmark": "*",
-    "@webmap/api-gen": "*",
     "@anthropic-ai/sdk": "^0.39.0",
-    "hono": "^4.7.0",
-    "@hono/node-server": "^1.14.0"
+    "playwright": "^1.50.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

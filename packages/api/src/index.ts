@@ -34,6 +34,7 @@ import batchRoutes from "./routes/batch.js";
 import benchmarkSitesRoutes from "./routes/benchmark-sites.js";
 import benchmarkRunsRoutes from "./routes/benchmark-runs.js";
 import benchmarkMultiRoutes from "./routes/benchmark-multi.js";
+import apiGenRoutes from "./routes/api-gen.js";
 import proxyRoutes from "./routes/proxy.js";
 
 // ─── App ────────────────────────────────────────────────────────────────────
@@ -72,6 +73,7 @@ app.route("/", batchRoutes);
 app.route("/", benchmarkSitesRoutes);
 app.route("/", benchmarkRunsRoutes);
 app.route("/", benchmarkMultiRoutes);
+app.route("/", apiGenRoutes);
 app.route("/", proxyRoutes);
 
 // ─── Export for testing ─────────────────────────────────────────────────────
@@ -103,10 +105,13 @@ if (!ANTHROPIC_KEY) {
 
   server.on("listening", () => {
     console.log(`WebMap API server running at http://localhost:${port}`);
-    console.log(`  POST /api/crawl          — Start a crawl`);
-    console.log(`  GET  /api/docs/:domain   — Get cached docs`);
-    console.log(`  GET  /api/status/:jobId  — Check job status`);
-    console.log(`  GET  /{url}              — URL-prefix proxy`);
+    console.log(`  POST /api/crawl              — Start a crawl`);
+    console.log(`  GET  /api/docs/:domain       — Get cached docs`);
+    console.log(`  GET  /api/status/:jobId      — Check job status`);
+    console.log(`  POST /api/benchmark/multi    — Start multi-method benchmark`);
+    console.log(`  POST /api/api-gen/discover   — Discover site APIs`);
+    console.log(`  GET  /api/api-gen/domains    — List generated APIs`);
+    console.log(`  GET  /{url}                  — URL-prefix proxy`);
   });
 
   server.on("error", (err: NodeJS.ErrnoException) => {
