@@ -94,8 +94,10 @@ export class DocGenerator {
 
   constructor(options: GeneratorOptions) {
     this.client = options.client || new Anthropic({ apiKey: options.apiKey });
-    this.pageModel = options.pageModel || "claude-sonnet-4-20250514";
-    this.synthesisModel = options.synthesisModel || "claude-sonnet-4-20250514";
+    // In CUA mode, page enrichment is a simple short-output task — Haiku is sufficient and 3-5x cheaper.
+    const defaultModel = options.cuaMode ? "claude-haiku-4-5-20251001" : "claude-sonnet-4-20250514";
+    this.pageModel = options.pageModel || defaultModel;
+    this.synthesisModel = options.synthesisModel || defaultModel;
     this.cuaMode = options.cuaMode || false;
   }
 
@@ -209,6 +211,7 @@ Respond in this exact JSON format:
       system: CUA_SYSTEM_PROMPT,
       prompt,
       schema: CuaPageEnrichmentSchema,
+      cacheSystem: true,
     });
 
     this.trackResult(result);
@@ -265,6 +268,7 @@ Respond in this exact JSON format:
       system: SYSTEM_PROMPT,
       prompt,
       schema: PageEnrichmentSchema,
+      cacheSystem: true,
     });
 
     this.trackResult(result);
@@ -375,6 +379,7 @@ Respond in this exact JSON format:
       system: SYSTEM_PROMPT,
       prompt,
       schema: WorkflowsSchema,
+      cacheSystem: true,
     });
 
     this.trackResult(result);

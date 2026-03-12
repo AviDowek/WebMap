@@ -51,3 +51,14 @@ export {
   generateDiverseSites,
   createManualTask,
 } from "./task-generator.js";
+
+// Industry benchmark datasets
+export {
+  DATASET_REGISTRY,
+  loadDataset,
+  getDatasetInfo,
+  type DatasetSource,
+  type DatasetInfo,
+  type DatasetConfig,
+  type CostEstimate,
+} from "./datasets/index.js";

@@ -20,6 +20,67 @@ import { executeComputerAction } from "./actions.js";
 import { A11Y_BROWSER_TOOL, executeA11yAction } from "./a11y-actions.js";
 import { verifyTaskSuccess } from "./verification.js";
 
+// ─── Model pricing (USD per token) ──────────────────────────────────
+// Cache reads cost 10% of normal input; cache writes cost 125% of normal input.
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  "claude-haiku-4-5-20251001": { input: 1.0 / 1_000_000, output: 5.0 / 1_000_000 },
+  "claude-sonnet-4-20250514":  { input: 3.0 / 1_000_000, output: 15.0 / 1_000_000 },
+};
+
+function computeStepCost(
+  usage: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined,
+  model: string
+): { cost: number; cacheRead: number; cacheCreation: number } {
+  if (!usage) return { cost: 0, cacheRead: 0, cacheCreation: 0 };
+  const pricing = MODEL_PRICING[model] ?? MODEL_PRICING["claude-sonnet-4-20250514"];
+  const inputTokens = usage.input_tokens || 0;
+  const outputTokens = usage.output_tokens || 0;
+  const cacheRead = usage.cache_read_input_tokens || 0;
+  const cacheCreation = usage.cache_creation_input_tokens || 0;
+  const cost =
+    inputTokens * pricing.input +
+    outputTokens * pricing.output +
+    cacheRead * pricing.input * 0.1 +
+    cacheCreation * pricing.input * 1.25;
+  return { cost, cacheRead, cacheCreation };
+}
+
+// ─── A11y tree size limit ─────────────────────────────────────────────
+// Large a11y snapshots can spike tokens significantly on complex pages.
+// 8000 chars ≈ ~2000 tokens — enough to cover typical page structure.
+const A11Y_MAX_CHARS = 8_000;
+
+function truncateA11y(tree: string): string {
+  if (tree.length <= A11Y_MAX_CHARS) return tree;
+  return tree.slice(0, A11Y_MAX_CHARS) + "\n... [truncated — tree exceeds size limit]";
+}
+
+// ─── Rate-limit retry helper ──────────────────────────────────────────
+// Anthropic returns 429 (rate limit) or 529 (overloaded). Retry with
+// exponential backoff up to 3 times before propagating the error.
+async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
+  const MAX_RETRIES = 3;
+  let delay = 10_000; // start at 10s
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      const isRetryable = status === 429 || status === 529;
+      if (!isRetryable || attempt === MAX_RETRIES) throw e;
+      console.warn(`  [rate-limit] HTTP ${status} — retrying in ${delay / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      await new Promise((r) => setTimeout(r, delay));
+      delay *= 2; // 10s → 20s → 40s
+    }
+  }
+  throw new Error("unreachable");
+}
+
+// ─── System prompt builder (as cacheable array block) ────────────────
+function buildSystemBlock(text: string): Parameters<typeof Anthropic.prototype.messages.create>[0]["system"] {
+  return [{ type: "text" as const, text, cache_control: { type: "ephemeral" as const } }];
+}
+
 export interface RunTaskOptions {
   /** Enable automated success verification via independent LLM judge */
   verify?: boolean;
@@ -37,17 +98,34 @@ export async function runTask(
   const startTime = Date.now();
   const actions: string[] = [];
   let tokensUsed = 0;
+  let estimatedCostUsd = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let success = false;
   let error: string | undefined;
 
-  const isA11yOnly = method === "a11y-tree";
+  const isA11yOnly = method === "a11y-tree" || method === "a11y-first-message";
   const isHybrid = method === "hybrid";
+  const isHaikuVision = method === "haiku-vision";
+  const isCascade = method === "cascade";
   const useA11y = isA11yOnly || isHybrid;
 
   const context = await browser.newContext({
     viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
   });
   const page = await context.newPage();
+
+  // Mutable model for cascade support
+  let currentModel: string;
+  if (isA11yOnly || isHaikuVision || isCascade) {
+    currentModel = "claude-haiku-4-5-20251001";
+  } else {
+    currentModel = "claude-sonnet-4-20250514";
+  }
+
+  // Cascade state
+  const recentUrls: string[] = [];
+  let cascadeEscalations = 0;
 
   try {
     await page.goto(task.url, { waitUntil: "domcontentloaded" });
@@ -57,32 +135,36 @@ export async function runTask(
 If you cannot complete the task, respond with "TASK_FAILED" and the reason.`;
 
     // Build system prompt based on method
-    let systemPrompt: string;
+    let systemPromptText: string;
     if (isA11yOnly) {
-      systemPrompt = `You are a browser automation agent completing tasks on websites.
+      systemPromptText = `You are a browser automation agent completing tasks on websites.
 You receive the page's accessibility tree (text representation of all elements). Use element roles and names to identify targets for your actions.
 
 ${baseInstructions}`;
     } else {
-      systemPrompt = `You are a browser automation agent completing tasks on websites.
+      systemPromptText = `You are a browser automation agent completing tasks on websites.
 Analyze the screenshots to understand the page and interact with elements to complete the given task.
 
 `;
       if (method === "micro-guide" && documentation) {
-        systemPrompt += formatMicroGuide(documentation) + "\n\n";
+        systemPromptText += formatMicroGuide(documentation) + "\n\n";
       } else if (method === "full-guide" && documentation) {
-        systemPrompt += formatFullGuide(documentation) + "\n\n";
+        systemPromptText += formatFullGuide(documentation) + "\n\n";
       } else if (method === "pre-plan" && prePlan) {
-        systemPrompt += `PLAN:\n${prePlan}\n\n`;
+        systemPromptText += `PLAN:\n${prePlan}\n\n`;
       }
 
-      systemPrompt += baseInstructions;
+      systemPromptText += baseInstructions;
     }
+
+    // Wrap in cacheable array block so repeat calls hit the cache
+    const systemBlock = buildSystemBlock(systemPromptText);
 
     // Build initial message content
     let taskText = `Task: ${task.instruction}\nSuccess criteria: ${task.successCriteria}`;
 
-    if (method === "first-message" && documentation) {
+    // First-message doc injection (works for both first-message and a11y-first-message)
+    if ((method === "first-message" || method === "a11y-first-message") && documentation) {
       const docText = formatFirstMessageDocs(documentation);
       taskText = `${docText}\n\n${taskText}`;
     }
@@ -91,14 +173,14 @@ Analyze the screenshots to understand the page and interact with elements to com
 
     if (isA11yOnly) {
       // A11y-tree mode: text only, no screenshots
-      const a11yTree = await getA11ySnapshot(page);
+      const a11yTree = truncateA11y(await getA11ySnapshot(page));
       taskText += "\n\nCurrent page accessibility tree:\n" + a11yTree;
       initialContent.push({ type: "text", text: taskText });
     } else {
       // Vision or hybrid mode
       const initialScreenshot = await captureScreenshot(page);
       if (isHybrid) {
-        const a11yTree = await getA11ySnapshot(page);
+        const a11yTree = truncateA11y(await getA11ySnapshot(page));
         taskText += "\n\nAccessibility tree:\n" + a11yTree + "\n\nBrowser screenshot:";
       } else {
         taskText += "\n\nHere is the current browser screenshot:";
@@ -113,40 +195,48 @@ Analyze the screenshots to understand the page and interact with elements to com
       { role: "user", content: initialContent },
     ];
 
-    // Choose model and tools based on mode
-    const model = isA11yOnly ? "claude-haiku-4-5-20251001" : "claude-sonnet-4-20250514";
-
     for (let step = 0; step < MAX_STEPS; step++) {
-      // Build request differently for a11y vs vision modes
-      const response = isA11yOnly
-        ? await client.messages.create({
-            model,
-            max_tokens: 4096,
-            temperature: 0.3,
-            system: systemPrompt,
-            tools: [A11Y_BROWSER_TOOL],
-            messages: messages as Parameters<typeof client.messages.create>[0]["messages"],
-          })
-        : await client.beta.messages.create({
-            model,
-            max_tokens: 4096,
-            temperature: 0.3,
-            system: systemPrompt,
-            tools: [
-              {
-                type: "computer_20250124",
-                name: "computer",
-                display_width_px: DISPLAY_WIDTH,
-                display_height_px: DISPLAY_HEIGHT,
-              },
-            ],
-            messages,
-            betas: ["computer-use-2025-01-24"],
-          });
+      // Build request differently for a11y vs vision modes; retry on 429/529
+      const response = await withRateLimitRetry(() =>
+        isA11yOnly
+          ? client.messages.create({
+              model: currentModel,
+              max_tokens: 4096,
+              temperature: 0.3,
+              system: systemBlock as Parameters<typeof client.messages.create>[0]["system"],
+              tools: [A11Y_BROWSER_TOOL],
+              messages: messages as Parameters<typeof client.messages.create>[0]["messages"],
+            })
+          : client.beta.messages.create({
+              model: currentModel,
+              max_tokens: 4096,
+              temperature: 0.3,
+              system: systemBlock as Parameters<typeof client.beta.messages.create>[0]["system"],
+              tools: [
+                {
+                  type: "computer_20250124",
+                  name: "computer",
+                  display_width_px: DISPLAY_WIDTH,
+                  display_height_px: DISPLAY_HEIGHT,
+                },
+              ],
+              messages,
+              betas: ["computer-use-2025-01-24"],
+            })
+      );
 
+      // Accumulate tokens
       tokensUsed +=
         (response.usage?.input_tokens || 0) +
-        (response.usage?.output_tokens || 0);
+        (response.usage?.output_tokens || 0) +
+        (response.usage?.cache_read_input_tokens || 0) +
+        (response.usage?.cache_creation_input_tokens || 0);
+
+      // Compute USD cost for this step using current model's pricing
+      const stepCost = computeStepCost(response.usage as Parameters<typeof computeStepCost>[0], currentModel);
+      estimatedCostUsd += stepCost.cost;
+      cacheReadTokens += stepCost.cacheRead;
+      cacheCreationTokens += stepCost.cacheCreation;
 
       messages.push({ role: "assistant", content: response.content });
 
@@ -204,7 +294,7 @@ Analyze the screenshots to understand the page and interact with elements to com
 
           if (isA11yOnly) {
             // A11y-tree mode: return text snapshot
-            const a11yTree = await getA11ySnapshot(page);
+            const a11yTree = truncateA11y(await getA11ySnapshot(page));
             toolResults.push({
               type: "tool_result",
               tool_use_id: toolUse.id,
@@ -213,7 +303,7 @@ Analyze the screenshots to understand the page and interact with elements to com
           } else if (isHybrid) {
             // Hybrid: return both a11y tree and screenshot
             const screenshot = await captureScreenshot(page);
-            const a11yTree = await getA11ySnapshot(page);
+            const a11yTree = truncateA11y(await getA11ySnapshot(page));
             toolResults.push({
               type: "tool_result",
               tool_use_id: toolUse.id,
@@ -223,7 +313,7 @@ Analyze the screenshots to understand the page and interact with elements to com
               ],
             });
           } else {
-            // Standard vision mode
+            // Standard vision mode (Sonnet or Haiku)
             const screenshot = await captureScreenshot(page);
             toolResults.push({
               type: "tool_result",
@@ -241,7 +331,8 @@ Analyze the screenshots to understand the page and interact with elements to com
           actions.push(`  → Error: ${errMsg}`);
 
           if (isA11yOnly) {
-            const a11yTree = await getA11ySnapshot(page).catch(() => "(unavailable)");
+            const rawTree = await getA11ySnapshot(page).catch(() => "(unavailable)");
+            const a11yTree = typeof rawTree === "string" ? truncateA11y(rawTree) : rawTree;
             toolResults.push({
               type: "tool_result",
               tool_use_id: toolUse.id,
@@ -268,6 +359,22 @@ Analyze the screenshots to understand the page and interact with elements to com
       }
 
       messages.push({ role: "user", content: toolResults });
+
+      // ─── Cascade stuck detection ─────────────────────────────────
+      if (isCascade && currentModel !== "claude-sonnet-4-20250514") {
+        const currentUrl = page.url();
+        recentUrls.push(currentUrl);
+        if (recentUrls.length > 3) recentUrls.shift();
+
+        const urlStuck = recentUrls.length === 3 && new Set(recentUrls).size === 1;
+        const errorCount = actions.filter(a => a.includes("→ Error:")).length;
+
+        if (urlStuck || errorCount >= 2) {
+          currentModel = "claude-sonnet-4-20250514";
+          cascadeEscalations++;
+          console.log(`  [cascade] Escalating to Sonnet at step ${step + 1} (urlStuck=${urlStuck}, errors=${errorCount})`);
+        }
+      }
     }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
@@ -282,6 +389,7 @@ Analyze the screenshots to understand the page and interact with elements to com
   let verificationReason: string | undefined;
   let verificationTokensUsed: number | undefined;
   let verificationDurationMs: number | undefined;
+  let verificationCostUsd: number | undefined;
 
   if (options?.verify) {
     selfReportedSuccess = success;
@@ -292,6 +400,12 @@ Analyze the screenshots to understand the page and interact with elements to com
       verificationReason = verification.reason;
       verificationTokensUsed = verification.tokensUsed;
       verificationDurationMs = Date.now() - verifyStart;
+
+      // Verification always uses Sonnet — use actual input/output split for accuracy
+      const sonnetPricing = MODEL_PRICING["claude-sonnet-4-20250514"];
+      verificationCostUsd =
+        verification.inputTokens * sonnetPricing.input +
+        verification.outputTokens * sonnetPricing.output;
 
       if (verification.confidence >= 0.6 && verification.success !== success) {
         success = verification.success;
@@ -325,5 +439,10 @@ Analyze the screenshots to understand the page and interact with elements to com
     verificationReason,
     verificationTokensUsed,
     verificationDurationMs,
+    estimatedCostUsd,
+    cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+    cacheCreationTokens: cacheCreationTokens > 0 ? cacheCreationTokens : undefined,
+    verificationCostUsd,
+    cascadeEscalations: isCascade ? cascadeEscalations : undefined,
   };
 }

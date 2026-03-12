@@ -17,8 +17,10 @@ export interface BenchmarkTask {
   successCriteria: string;
   /** Category (navigation, form-fill, search, purchase, etc.) */
   category: string;
-  /** Source: 'sample' | 'manual' | 'ai-generated' */
-  source?: string;
+  /** Source of the task */
+  source?: "sample" | "manual" | "ai-generated"
+    | "mind2web" | "webbench" | "webarena"
+    | "webchore-arena" | "visual-webarena" | "workarena";
 }
 
 export interface TaskResult {
@@ -47,6 +49,16 @@ export interface TaskResult {
   verificationDurationMs?: number;
   /** Which run this is (1-indexed), when runsPerTask > 1 */
   runIndex?: number;
+  /** Estimated USD cost of the CUA run (excludes verification). Computed from actual input/output tokens × model pricing. */
+  estimatedCostUsd?: number;
+  /** Prompt cache read tokens (10% of normal input price) */
+  cacheReadTokens?: number;
+  /** Prompt cache creation tokens (125% of normal input price) */
+  cacheCreationTokens?: number;
+  /** Estimated USD cost of the verification call (separate from estimatedCostUsd) */
+  verificationCostUsd?: number;
+  /** Number of times the cascade method escalated from Haiku to Sonnet */
+  cascadeEscalations?: number;
 }
 
 /** Aggregated result across multiple runs of the same task+method */
@@ -95,6 +107,10 @@ export interface AggregateMetrics {
   avgTokensPerTask: number;
   avgDurationMs: number;
   avgSteps: number;
+  /** Average USD cost per task (CUA only, excludes verification) */
+  avgCostUsd: number;
+  /** Total USD cost across all tasks in this aggregate (CUA only, excludes verification) */
+  totalCostUsd: number;
   /** 95% Wilson confidence interval for success rate (only with multiple runs) */
   confidenceInterval95?: { lower: number; upper: number };
   /** Fraction of tasks where verification disagreed with agent self-report */
@@ -103,6 +119,8 @@ export interface AggregateMetrics {
   verificationOverhead?: {
     avgTokensPerTask: number;
     avgDurationMs: number;
+    avgCostUsd: number;
+    totalCostUsd: number;
   };
 }
 
@@ -110,13 +128,16 @@ export interface AggregateMetrics {
 
 /** Doc injection methods to compare in benchmarks */
 export type DocMethod =
-  | "none"           // Baseline — no documentation
-  | "micro-guide"    // ~100 token guide in system prompt
-  | "full-guide"     // ~400 token guide with layout/nav/sitemap in system prompt
-  | "first-message"  // Docs injected in first user message (doesn't compound)
-  | "pre-plan"       // Use docs to generate task-specific plan before CUA starts
-  | "a11y-tree"      // Text-based: accessibility tree instead of screenshots
-  | "hybrid";        // Both: accessibility tree + screenshots
+  | "none"               // Baseline — no documentation
+  | "micro-guide"        // ~100 token guide in system prompt
+  | "full-guide"         // ~400 token guide with layout/nav/sitemap in system prompt
+  | "first-message"      // Docs injected in first user message (doesn't compound)
+  | "pre-plan"           // Use docs to generate task-specific plan before CUA starts
+  | "a11y-tree"          // Text-based: accessibility tree instead of screenshots (Haiku)
+  | "hybrid"             // Both: accessibility tree + screenshots
+  | "a11y-first-message" // A11y Tree (Haiku) + first-message doc injection
+  | "haiku-vision"       // computer_use with Haiku model (3x cheaper than Sonnet)
+  | "cascade";           // Haiku vision → escalate to Sonnet when stuck
 
 export const ALL_DOC_METHODS: DocMethod[] = [
   "none",
@@ -126,6 +147,9 @@ export const ALL_DOC_METHODS: DocMethod[] = [
   "pre-plan",
   "a11y-tree",
   "hybrid",
+  "a11y-first-message",
+  "haiku-vision",
+  "cascade",
 ];
 
 export const DOC_METHOD_LABELS: Record<DocMethod, string> = {
@@ -133,9 +157,12 @@ export const DOC_METHOD_LABELS: Record<DocMethod, string> = {
   "micro-guide": "Micro Guide (~100 tokens, system prompt)",
   "full-guide": "Full Guide (~400 tokens, system prompt)",
   "first-message": "First Message Injection (no compounding)",
-  "pre-plan": "Pre-Plan (task-specific plan from docs)",
-  "a11y-tree": "A11y Tree (text-only, no screenshots)",
+  "pre-plan": "Pre-Plan (task-specific plan from docs, Haiku)",
+  "a11y-tree": "A11y Tree (text-only, no screenshots, Haiku)",
   "hybrid": "Hybrid (a11y tree + screenshots)",
+  "a11y-first-message": "A11y Tree + First Message Docs (Haiku)",
+  "haiku-vision": "Haiku Vision (computer_use, 3x cheaper)",
+  "cascade": "Cascade (Haiku→Sonnet on stuck)",
 };
 
 export interface MethodResult {
@@ -175,6 +202,12 @@ export interface MultiMethodBenchmarkOptions {
   runsPerTask?: number;
   /** Enable automated success verification via independent LLM judgment (default: false). */
   verifyResults?: boolean;
+  /**
+   * Maximum number of sites to run concurrently (default: 2).
+   * Higher values reduce wall time but increase concurrent API calls.
+   * Warning: concurrency × methods.length > 20 may trigger API rate limits.
+   */
+  siteConcurrency?: number;
   onProgress?: (update: {
     phase: string;
     site?: string;

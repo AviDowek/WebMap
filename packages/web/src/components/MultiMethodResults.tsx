@@ -5,6 +5,13 @@ import type { MultiMethodResult, MethodResultData, DocMethod } from "../lib/type
 import { DOC_METHOD_LABELS, DOC_METHOD_DESCRIPTIONS, METHOD_COLORS } from "../lib/constants";
 import { cardStyle } from "../lib/styles";
 
+function formatCost(usd: number | undefined): string {
+  if (usd === undefined) return "—";
+  if (usd < 0.0001) return "$0.0000";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(3)}`;
+}
+
 export default function MultiMethodResults({ result }: { result: MultiMethodResult }) {
   const [expandedSite, setExpandedSite] = useState<string | null>(null);
 
@@ -15,12 +22,15 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
     return <div style={{ color: "#888", textAlign: "center", padding: 40 }}>No benchmark results available.</div>;
   }
 
+  const hasCostData = allMethods.some((m) => m.metrics.avgCostUsd !== undefined && m.metrics.avgCostUsd > 0);
+
   // Compute winners for each category
   const mostAccurate = [...allMethods].sort(
-    (a, b) => b.metrics.successRate - a.metrics.successRate || a.metrics.avgTokensPerTask - b.metrics.avgTokensPerTask
+    (a, b) => b.metrics.successRate - a.metrics.successRate || (a.metrics.avgCostUsd ?? a.metrics.avgTokensPerTask) - (b.metrics.avgCostUsd ?? b.metrics.avgTokensPerTask)
   )[0];
+  // Most efficient = lowest actual cost (falls back to token count if cost not available)
   const mostEfficient = [...allMethods].sort(
-    (a, b) => a.metrics.avgTokensPerTask - b.metrics.avgTokensPerTask
+    (a, b) => (a.metrics.avgCostUsd ?? a.metrics.avgTokensPerTask / 1e6) - (b.metrics.avgCostUsd ?? b.metrics.avgTokensPerTask / 1e6)
   )[0];
   const fastest = [...allMethods].sort(
     (a, b) => a.metrics.avgDurationMs - b.metrics.avgDurationMs
@@ -28,18 +38,21 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
 
   // Best values for highlighting
   const bestSuccessRate = Math.max(...allMethods.map((m) => m.metrics.successRate));
+  const bestCost = Math.min(...allMethods.map((m) => m.metrics.avgCostUsd ?? Infinity));
   const bestTokens = Math.min(...allMethods.map((m) => m.metrics.avgTokensPerTask));
   const bestDuration = Math.min(...allMethods.map((m) => m.metrics.avgDurationMs));
   const bestSteps = Math.min(...allMethods.map((m) => m.metrics.avgSteps));
 
-  // Composite score (normalized 0-1, higher is better)
-  const maxTokens = Math.max(...allMethods.map((m) => m.metrics.avgTokensPerTask));
+  // Composite score: success 50% + cost-efficiency 30% + speed 20%
+  // Uses actual cost if available (rewards cheaper Haiku methods correctly)
   const maxDuration = Math.max(...allMethods.map((m) => m.metrics.avgDurationMs));
+  const maxCost = Math.max(...allMethods.map((m) => m.metrics.avgCostUsd ?? m.metrics.avgTokensPerTask / 1e6));
   function compositeScore(m: MethodResultData): number {
     const successNorm = m.metrics.successRate;
-    const tokenNorm = maxTokens > 0 ? 1 - (m.metrics.avgTokensPerTask / maxTokens) : 0;
-    const speedNorm = maxDuration > 0 ? 1 - (m.metrics.avgDurationMs / maxDuration) : 0;
-    return successNorm * 0.5 + tokenNorm * 0.3 + speedNorm * 0.2;
+    const cost = m.metrics.avgCostUsd ?? (m.metrics.avgTokensPerTask / 1e6);
+    const costNorm = maxCost > 0 ? 1 - cost / maxCost : 0;
+    const speedNorm = maxDuration > 0 ? 1 - m.metrics.avgDurationMs / maxDuration : 0;
+    return successNorm * 0.5 + costNorm * 0.3 + speedNorm * 0.2;
   }
   const scoredMethods = allMethods.map((m) => ({ ...m, score: compositeScore(m) })).sort((a, b) => b.score - a.score);
 
@@ -54,11 +67,13 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
   for (const site of result.sites) {
     if (site.methods.every((m) => m.metrics.successRate === 0)) continue;
     const best = [...site.methods].sort(
-      (a, b) => b.metrics.successRate - a.metrics.successRate || a.metrics.avgTokensPerTask - b.metrics.avgTokensPerTask
+      (a, b) => b.metrics.successRate - a.metrics.successRate || (a.metrics.avgCostUsd ?? a.metrics.avgTokensPerTask) - (b.metrics.avgCostUsd ?? b.metrics.avgTokensPerTask)
     )[0];
     if (best) winCounts[best.method] = (winCounts[best.method] || 0) + 1;
   }
   const topWinner = Object.entries(winCounts).sort((a, b) => b[1] - a[1])[0];
+
+  const grandTotalCost = allMethods.reduce((s, m) => s + (m.metrics.totalCostUsd ?? 0), 0);
 
   // Download handlers
   function downloadJSON() {
@@ -72,13 +87,15 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
   }
 
   function downloadCSV() {
-    const headers = ["Method", "Success Rate", "Avg Tokens", "Avg Duration (s)", "Avg Steps", "Overall Score"];
+    const headers = ["Method", "Success Rate", "Avg Tokens", "Avg Duration (s)", "Avg Steps", "Cost/Task", "Total Cost", "Overall Score"];
     const rows = scoredMethods.map((m) => [
       DOC_METHOD_LABELS[m.method] || m.method,
       `${(m.metrics.successRate * 100).toFixed(1)}%`,
       m.metrics.avgTokensPerTask.toFixed(0),
       (m.metrics.avgDurationMs / 1000).toFixed(1),
       m.metrics.avgSteps.toFixed(1),
+      formatCost(m.metrics.avgCostUsd),
+      formatCost(m.metrics.totalCostUsd),
       (m.score * 100).toFixed(1),
     ]);
     const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
@@ -110,16 +127,20 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
           )}
         </div>
         <div style={cardStyle}>
-          <div style={{ fontSize: 11, color: "#888", marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Most Efficient</div>
+          <div style={{ fontSize: 11, color: "#888", marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Cheapest</div>
           <div style={{ fontSize: 16, fontWeight: 700, color: METHOD_COLORS[mostEfficient.method] || "#fff" }}>
             {DOC_METHOD_LABELS[mostEfficient.method]}
           </div>
           <div style={{ fontSize: 20, fontWeight: 700, color: "#fff", marginTop: 4 }}>
-            {(mostEfficient.metrics.avgTokensPerTask / 1000).toFixed(0)}K tokens
+            {mostEfficient.metrics.avgCostUsd !== undefined
+              ? formatCost(mostEfficient.metrics.avgCostUsd) + "/task"
+              : (mostEfficient.metrics.avgTokensPerTask / 1000).toFixed(0) + "K tokens"}
           </div>
-          {baselineOverall && mostEfficient.method !== "none" && baselineOverall.metrics.avgTokensPerTask > 0 && (
+          {baselineOverall && mostEfficient.method !== "none" && (
             <div style={{ fontSize: 11, color: "#22c55e", marginTop: 2 }}>
-              {(((mostEfficient.metrics.avgTokensPerTask - baselineOverall.metrics.avgTokensPerTask) / baselineOverall.metrics.avgTokensPerTask) * 100).toFixed(0)}% vs baseline
+              {mostEfficient.metrics.avgCostUsd !== undefined && baselineOverall.metrics.avgCostUsd
+                ? `${(((mostEfficient.metrics.avgCostUsd - baselineOverall.metrics.avgCostUsd) / baselineOverall.metrics.avgCostUsd) * 100).toFixed(0)}% cost vs baseline`
+                : `${(((mostEfficient.metrics.avgTokensPerTask - baselineOverall.metrics.avgTokensPerTask) / baselineOverall.metrics.avgTokensPerTask) * 100).toFixed(0)}% tokens vs baseline`}
             </div>
           )}
         </div>
@@ -137,6 +158,22 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
             </div>
           )}
         </div>
+        {grandTotalCost > 0 && (
+          <div style={cardStyle}>
+            <div style={{ fontSize: 11, color: "#888", marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Total Benchmark Cost</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#fff", marginTop: 4 }}>
+              {formatCost(grandTotalCost)}
+            </div>
+            <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
+              {result.methods.length} methods · {result.totalTasks} runs
+            </div>
+            {result.config?.runsPerTask && result.config.runsPerTask > 1 && (
+              <div style={{ fontSize: 10, color: "#555", marginTop: 2 }}>
+                Cost = per-run avg (×{result.config.runsPerTask} runs each)
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Overall Method Comparison */}
@@ -172,6 +209,8 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
               <th style={{ textAlign: "center", padding: "10px 12px" }}>Avg Tokens</th>
               <th style={{ textAlign: "center", padding: "10px 12px" }}>Avg Duration</th>
               <th style={{ textAlign: "center", padding: "10px 12px" }}>Avg Steps</th>
+              {hasCostData && <th style={{ textAlign: "center", padding: "10px 12px" }}>Cost/Task</th>}
+              {hasCostData && <th style={{ textAlign: "center", padding: "10px 12px" }}>Total Cost</th>}
               <th style={{ textAlign: "center", padding: "10px 12px" }}>Score</th>
               {baselineOverall && <th style={{ textAlign: "center", padding: "10px 12px" }}>vs Baseline</th>}
             </tr>
@@ -181,12 +220,16 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
               const successDelta = baselineOverall && mr.method !== "none"
                 ? mr.metrics.successRate - baselineOverall.metrics.successRate
                 : null;
-              const tokenDelta = baselineOverall && mr.method !== "none" && baselineOverall.metrics.avgTokensPerTask > 0
+              const costDelta = hasCostData && baselineOverall && mr.method !== "none" && baselineOverall.metrics.avgCostUsd && mr.metrics.avgCostUsd
+                ? ((mr.metrics.avgCostUsd - baselineOverall.metrics.avgCostUsd) / baselineOverall.metrics.avgCostUsd) * 100
+                : null;
+              const tokenDelta = !hasCostData && baselineOverall && mr.method !== "none" && baselineOverall.metrics.avgTokensPerTask > 0
                 ? ((mr.metrics.avgTokensPerTask - baselineOverall.metrics.avgTokensPerTask) / baselineOverall.metrics.avgTokensPerTask) * 100
                 : null;
 
               const isBestSuccess = mr.metrics.successRate === bestSuccessRate;
-              const isBestTokens = mr.metrics.avgTokensPerTask === bestTokens;
+              const isBestCost = hasCostData && mr.metrics.avgCostUsd !== undefined && mr.metrics.avgCostUsd === bestCost;
+              const isBestTokens = !hasCostData && mr.metrics.avgTokensPerTask === bestTokens;
               const isBestDuration = mr.metrics.avgDurationMs === bestDuration;
               const isBestSteps = mr.metrics.avgSteps === bestSteps;
               const isTopScore = i === 0;
@@ -195,7 +238,7 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                 <tr key={mr.method} style={{ borderBottom: "1px solid #222", backgroundColor: isTopScore ? "rgba(34, 197, 94, 0.05)" : i % 2 === 0 ? "transparent" : "#0a0a0a" }}>
                   <td style={{ padding: "10px 12px", fontWeight: 600 }} title={DOC_METHOD_DESCRIPTIONS[mr.method]}>
                     <span style={{ color: METHOD_COLORS[mr.method] || "#aaa" }}>
-                      {isTopScore ? "\u2605 " : ""}{DOC_METHOD_LABELS[mr.method]}
+                      {isTopScore ? "★ " : ""}{DOC_METHOD_LABELS[mr.method]}
                     </span>
                   </td>
                   <td style={{ textAlign: "center", padding: "10px 12px", fontWeight: isBestSuccess ? 700 : 400, color: isBestSuccess ? "#22c55e" : undefined }}>
@@ -210,6 +253,16 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                   <td style={{ textAlign: "center", padding: "10px 12px", fontWeight: isBestSteps ? 700 : 400, color: isBestSteps ? "#22c55e" : undefined }}>
                     {mr.metrics.avgSteps.toFixed(1)}
                   </td>
+                  {hasCostData && (
+                    <td style={{ textAlign: "center", padding: "10px 12px", fontWeight: isBestCost ? 700 : 400, color: isBestCost ? "#22c55e" : "#aaa" }}>
+                      {formatCost(mr.metrics.avgCostUsd)}
+                    </td>
+                  )}
+                  {hasCostData && (
+                    <td style={{ textAlign: "center", padding: "10px 12px", color: "#666", fontSize: 12 }}>
+                      {formatCost(mr.metrics.totalCostUsd)}
+                    </td>
+                  )}
                   <td style={{ textAlign: "center", padding: "10px 12px", fontWeight: 600, color: isTopScore ? "#22c55e" : "#aaa" }}>
                     {(mr.score * 100).toFixed(1)}
                   </td>
@@ -219,12 +272,18 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                         <span style={{ color: "#555" }}>--</span>
                       ) : (
                         <span>
-                          <span style={{ color: successDelta != null && successDelta > 0 ? "#22c55e" : successDelta != null && successDelta < 0 ? "#ef4444" : "#888", fontWeight: 600, marginRight: 8 }}>
+                          <span style={{ color: successDelta != null && successDelta > 0 ? "#22c55e" : successDelta != null && successDelta < 0 ? "#ef4444" : "#888", fontWeight: 600, display: "block" }}>
                             {successDelta != null ? `${successDelta > 0 ? "+" : ""}${(successDelta * 100).toFixed(1)}pp` : ""}
                           </span>
-                          <span style={{ color: tokenDelta != null && tokenDelta < 0 ? "#22c55e" : tokenDelta != null && tokenDelta > 0 ? "#ef4444" : "#888", fontSize: 12 }}>
-                            {tokenDelta != null ? `${tokenDelta > 0 ? "+" : ""}${tokenDelta.toFixed(0)}% tokens` : ""}
-                          </span>
+                          {costDelta !== null ? (
+                            <span style={{ color: costDelta < 0 ? "#22c55e" : "#ef4444", fontSize: 11 }}>
+                              {costDelta > 0 ? "+" : ""}{costDelta.toFixed(0)}% cost
+                            </span>
+                          ) : tokenDelta !== null ? (
+                            <span style={{ color: tokenDelta < 0 ? "#22c55e" : tokenDelta > 0 ? "#ef4444" : "#888", fontSize: 11 }}>
+                              {tokenDelta > 0 ? "+" : ""}{tokenDelta.toFixed(0)}% tokens
+                            </span>
+                          ) : null}
                         </span>
                       )}
                     </td>
@@ -234,6 +293,11 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
             })}
           </tbody>
         </table>
+        {hasCostData && (
+          <p style={{ color: "#555", fontSize: 11, marginTop: 8, margin: "8px 0 0" }}>
+            Haiku: $1/$5 per MTok · Sonnet: $3/$15 per MTok · Cache reads: 10% · Cache writes: 125% · Verification excluded
+          </p>
+        )}
       </div>
 
       {/* Per-Site Breakdown */}
@@ -253,7 +317,7 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
             const isExpanded = expandedSite === site.domain;
             const baseline = site.methods.find((m) => m.method === "none");
             const bestMethod = [...site.methods].sort(
-              (a, b) => b.metrics.successRate - a.metrics.successRate || a.metrics.avgTokensPerTask - b.metrics.avgTokensPerTask
+              (a, b) => b.metrics.successRate - a.metrics.successRate || (a.metrics.avgCostUsd ?? a.metrics.avgTokensPerTask) - (b.metrics.avgCostUsd ?? b.metrics.avgTokensPerTask)
             )[0];
             const isBroken = site.methods.every((m) => m.metrics.successRate === 0);
 
@@ -265,7 +329,7 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 600, fontSize: 14 }}>
-                      {isBroken ? "\u26A0 " : ""}{site.domain}
+                      {isBroken ? "⚠ " : ""}{site.domain}
                     </span>
                     {baseline && (
                       <span style={{ fontSize: 12, color: "#888" }}>
@@ -281,7 +345,7 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                       <span style={{ fontSize: 11, color: "#f59e0b" }}>All methods failed</span>
                     )}
                   </div>
-                  <span style={{ color: "#555", fontSize: 14 }}>{isExpanded ? "\u25B2" : "\u25BC"}</span>
+                  <span style={{ color: "#555", fontSize: 14 }}>{isExpanded ? "▲" : "▼"}</span>
                 </div>
 
                 {isExpanded && (
@@ -294,6 +358,8 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                           <th style={{ textAlign: "center", padding: "8px 10px" }}>Avg Tokens</th>
                           <th style={{ textAlign: "center", padding: "8px 10px" }}>Avg Duration</th>
                           <th style={{ textAlign: "center", padding: "8px 10px" }}>Avg Steps</th>
+                          {hasCostData && <th style={{ textAlign: "center", padding: "8px 10px" }}>Cost/Task</th>}
+                          {hasCostData && <th style={{ textAlign: "center", padding: "8px 10px" }}>Total</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -321,6 +387,16 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                             <td style={{ textAlign: "center", padding: "8px 10px", color: "#aaa" }}>
                               {mr.metrics.avgSteps.toFixed(1)}
                             </td>
+                            {hasCostData && (
+                              <td style={{ textAlign: "center", padding: "8px 10px", color: "#aaa" }}>
+                                {formatCost(mr.metrics.avgCostUsd)}
+                              </td>
+                            )}
+                            {hasCostData && (
+                              <td style={{ textAlign: "center", padding: "8px 10px", color: "#666", fontSize: 12 }}>
+                                {formatCost(mr.metrics.totalCostUsd)}
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -348,6 +424,7 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                               </td>
                               {site.methods.map((mr) => {
                                 const task = mr.tasks[taskIdx];
+                                const hasCascade = task?.cascadeEscalations && task.cascadeEscalations > 0;
                                 return (
                                   <td key={mr.method} style={{ textAlign: "center", padding: "6px 8px" }}>
                                     <span style={{ color: task?.success ? "#22c55e" : "#ef4444", fontWeight: 600, fontSize: 11 }}>
@@ -356,6 +433,16 @@ export default function MultiMethodResults({ result }: { result: MultiMethodResu
                                     <span style={{ color: "#555", fontSize: 10, marginLeft: 4 }}>
                                       {task ? `${(task.tokensUsed / 1000).toFixed(0)}K` : "--"}
                                     </span>
+                                    {task?.estimatedCostUsd !== undefined && (
+                                      <span style={{ color: "#444", fontSize: 10, display: "block" }}>
+                                        {formatCost(task.estimatedCostUsd)}
+                                      </span>
+                                    )}
+                                    {hasCascade && (
+                                      <span style={{ color: "#a78bfa", fontSize: 10, display: "block" }} title={`Escalated to Sonnet ${task.cascadeEscalations}x`}>
+                                        ↑{task.cascadeEscalations}×
+                                      </span>
+                                    )}
                                   </td>
                                 );
                               })}

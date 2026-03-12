@@ -42,6 +42,8 @@ export interface BenchmarkMetrics {
   avgTokensPerTask: number;
   avgDurationMs: number;
   avgSteps: number;
+  avgCostUsd?: number;
+  totalCostUsd?: number;
 }
 
 export interface BenchmarkStatus {
@@ -84,7 +86,17 @@ export interface BenchmarkStatus {
   error?: string;
 }
 
-export type DocMethod = "none" | "micro-guide" | "full-guide" | "first-message" | "pre-plan" | "a11y-tree" | "hybrid";
+export type DocMethod =
+  | "none"
+  | "micro-guide"
+  | "full-guide"
+  | "first-message"
+  | "pre-plan"
+  | "a11y-tree"
+  | "hybrid"
+  | "a11y-first-message"
+  | "haiku-vision"
+  | "cascade";
 
 export interface MethodResultData {
   method: DocMethod;
@@ -95,6 +107,10 @@ export interface MethodResultData {
     tokensUsed: number;
     durationMs: number;
     error?: string;
+    estimatedCostUsd?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    cascadeEscalations?: number;
   }>;
   metrics: BenchmarkMetrics;
 }
@@ -111,6 +127,10 @@ export interface MultiMethodResult {
   overall: MethodResultData[];
   methods: DocMethod[];
   totalTasks: number;
+  config?: {
+    runsPerTask?: number;
+    verifyResults?: boolean;
+  };
 }
 
 export interface MultiMethodHistoryEntry {

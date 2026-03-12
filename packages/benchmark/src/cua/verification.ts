@@ -23,8 +23,12 @@ export interface VerificationResult {
   confidence: number;
   /** Explanation of why the verifier judged pass or fail */
   reason: string;
-  /** Tokens used by the verification call */
+  /** Total tokens used (input + output) */
   tokensUsed: number;
+  /** Input tokens (for accurate cost computation) */
+  inputTokens: number;
+  /** Output tokens (for accurate cost computation) */
+  outputTokens: number;
 }
 
 /**
@@ -52,6 +56,8 @@ export async function verifyTaskSuccess(
       confidence: 0,
       reason: "Could not capture browser state for verification",
       tokensUsed: 0,
+      inputTokens: 0,
+      outputTokens: 0,
     };
   }
 
@@ -99,8 +105,9 @@ Respond with EXACTLY this JSON format:
       ],
     });
 
-    const tokensUsed =
-      (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
+    const inputTokens = response.usage?.input_tokens || 0;
+    const outputTokens = response.usage?.output_tokens || 0;
+    const tokensUsed = inputTokens + outputTokens;
 
     const text = response.content
       .filter((b) => b.type === "text")
@@ -115,6 +122,8 @@ Respond with EXACTLY this JSON format:
         confidence: 0,
         reason: "Verification response did not contain valid JSON",
         tokensUsed,
+        inputTokens,
+        outputTokens,
       };
     }
 
@@ -129,6 +138,8 @@ Respond with EXACTLY this JSON format:
       confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.5,
       reason: parsed.reason || "No reason provided",
       tokensUsed,
+      inputTokens,
+      outputTokens,
     };
   } catch (e) {
     return {
@@ -136,6 +147,8 @@ Respond with EXACTLY this JSON format:
       confidence: 0,
       reason: `Verification API call failed: ${e instanceof Error ? e.message : String(e)}`,
       tokensUsed: 0,
+      inputTokens: 0,
+      outputTokens: 0,
     };
   }
 }

@@ -11,6 +11,7 @@ export function computeMetrics(results: TaskResult[]): AggregateMetrics {
   const totalTokens = results.reduce((s, r) => s + r.tokensUsed, 0);
   const totalDuration = results.reduce((s, r) => s + r.durationMs, 0);
   const totalSteps = results.reduce((s, r) => s + r.steps, 0);
+  const totalCostUsd = results.reduce((s, r) => s + (r.estimatedCostUsd ?? 0), 0);
 
   const successRate = total > 0 ? successes / total : 0;
 
@@ -28,6 +29,7 @@ export function computeMetrics(results: TaskResult[]): AggregateMetrics {
   // Verification overhead (tracked separately so it doesn't pollute CUA metrics)
   const totalVerificationTokens = results.reduce((s, r) => s + (r.verificationTokensUsed ?? 0), 0);
   const totalVerificationMs = results.reduce((s, r) => s + (r.verificationDurationMs ?? 0), 0);
+  const totalVerificationCostUsd = results.reduce((s, r) => s + (r.verificationCostUsd ?? 0), 0);
 
   return {
     totalTasks: total,
@@ -35,11 +37,15 @@ export function computeMetrics(results: TaskResult[]): AggregateMetrics {
     avgTokensPerTask: total > 0 ? totalTokens / total : 0,
     avgDurationMs: total > 0 ? totalDuration / total : 0,
     avgSteps: total > 0 ? totalSteps / total : 0,
+    avgCostUsd: total > 0 ? totalCostUsd / total : 0,
+    totalCostUsd,
     confidenceInterval95: ci,
     verificationOverrideRate,
     verificationOverhead: verifiedResults.length > 0 ? {
       avgTokensPerTask: totalVerificationTokens / verifiedResults.length,
       avgDurationMs: totalVerificationMs / verifiedResults.length,
+      avgCostUsd: totalVerificationCostUsd / verifiedResults.length,
+      totalCostUsd: totalVerificationCostUsd,
     } : undefined,
   };
 }
@@ -74,6 +80,7 @@ export function wilsonConfidenceInterval(
 /**
  * Aggregate multiple runs of the same task into a single result.
  * The aggregated TaskResult uses majority-vote success and averaged metrics.
+ * Cost is averaged per-run (not summed) so reported cost reflects production cost.
  */
 export function aggregateRuns(runs: TaskResult[]): MultiRunTaskResult {
   if (runs.length === 0) throw new Error("Cannot aggregate 0 runs");
@@ -86,6 +93,10 @@ export function aggregateRuns(runs: TaskResult[]): MultiRunTaskResult {
   const avgTokensUsed = runs.reduce((s, r) => s + r.tokensUsed, 0) / totalRuns;
   const avgDurationMs = runs.reduce((s, r) => s + r.durationMs, 0) / totalRuns;
   const avgSteps = runs.reduce((s, r) => s + r.steps, 0) / totalRuns;
+  // Average cost per run (not total), so reported cost = cost of running task once
+  const avgCostUsd = runs.reduce((s, r) => s + (r.estimatedCostUsd ?? 0), 0) / totalRuns;
+  const avgCacheRead = runs.reduce((s, r) => s + (r.cacheReadTokens ?? 0), 0) / totalRuns;
+  const avgCacheCreation = runs.reduce((s, r) => s + (r.cacheCreationTokens ?? 0), 0) / totalRuns;
 
   // Majority vote for the aggregated success
   const majoritySuccess = successes > totalRuns / 2;
@@ -111,6 +122,9 @@ export function aggregateRuns(runs: TaskResult[]): MultiRunTaskResult {
       tokensUsed: Math.round(avgTokensUsed),
       durationMs: Math.round(avgDurationMs),
       steps: Math.round(avgSteps),
+      estimatedCostUsd: avgCostUsd,
+      cacheReadTokens: avgCacheRead > 0 ? Math.round(avgCacheRead) : undefined,
+      cacheCreationTokens: avgCacheCreation > 0 ? Math.round(avgCacheCreation) : undefined,
     },
   };
 }
@@ -141,6 +155,9 @@ export function printBenchmarkSummary(result: BenchmarkResult): void {
   console.log(
     `  Avg Steps         ${baseline.avgSteps.toFixed(1)}          ${withDocs.avgSteps.toFixed(1)}          ${(withDocs.avgSteps - baseline.avgSteps).toFixed(1)}`
   );
+  console.log(
+    `  Avg Cost          $${baseline.avgCostUsd.toFixed(4)}      $${withDocs.avgCostUsd.toFixed(4)}`
+  );
   if (baseline.verificationOverrideRate !== undefined) {
     console.log(
       `  Verify Overrides  ${(baseline.verificationOverrideRate * 100).toFixed(1)}%        ${((withDocs.verificationOverrideRate ?? 0) * 100).toFixed(1)}%`
@@ -154,6 +171,9 @@ export function printBenchmarkSummary(result: BenchmarkResult): void {
     );
     console.log(
       `    Avg Duration    ${(baseline.verificationOverhead.avgDurationMs / 1000).toFixed(1)}s        ${((withDocs.verificationOverhead?.avgDurationMs ?? 0) / 1000).toFixed(1)}s`
+    );
+    console.log(
+      `    Avg Cost        $${baseline.verificationOverhead.avgCostUsd.toFixed(4)}      $${(withDocs.verificationOverhead?.avgCostUsd ?? 0).toFixed(4)}`
     );
   }
   console.log("=".repeat(60));

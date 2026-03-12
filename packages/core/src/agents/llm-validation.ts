@@ -82,6 +82,8 @@ export interface LLMCallOptions<T> {
   retryDelayMs?: number;
   /** Whether to match a JSON array instead of object (default: false) */
   matchArray?: boolean;
+  /** Wrap the system prompt in a cache_control block so repeated calls hit the prompt cache (default: false) */
+  cacheSystem?: boolean;
 }
 
 export interface LLMCallResult<T> {
@@ -130,7 +132,15 @@ export async function callLLMWithValidation<T>(
     maxRetries = 2,
     retryDelayMs = 1000,
     matchArray = false,
+    cacheSystem = false,
   } = options;
+
+  // Build system parameter — cacheable array block or plain string
+  const systemParam = system
+    ? cacheSystem
+      ? [{ type: "text" as const, text: system, cache_control: { type: "ephemeral" as const } }]
+      : system
+    : undefined;
 
   let tokensUsed = 0;
   const errors: string[] = [];
@@ -146,7 +156,7 @@ export async function callLLMWithValidation<T>(
       const response = await client.messages.create({
         model,
         max_tokens: maxTokens,
-        ...(system ? { system } : {}),
+        ...(systemParam ? { system: systemParam as Parameters<typeof client.messages.create>[0]["system"] } : {}),
         messages: [{ role: "user", content: userMessage }],
       });
 
@@ -189,6 +199,9 @@ export async function callLLMWithValidation<T>(
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       errors.push(`API error: ${errMsg}`);
+      // Don't retry auth/permission failures — they are deterministic
+      const status = (e as { status?: number }).status;
+      if (status === 401 || status === 403) break;
       if (attempt < maxRetries) {
         await new Promise((r) => setTimeout(r, retryDelayMs));
       }

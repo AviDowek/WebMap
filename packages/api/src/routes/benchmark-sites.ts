@@ -58,6 +58,14 @@ routes.post("/api/benchmark/sites", async (c) => {
   }
 
   const domain = parsed.hostname;
+
+  if (benchmarkSites.has(domain)) {
+    return c.json(
+      { error: `Site already exists: ${domain}. Delete it first to re-add.` },
+      409
+    );
+  }
+
   const hasDocs = getCached(domain) !== null;
 
   const site = {

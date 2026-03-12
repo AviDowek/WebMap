@@ -172,7 +172,8 @@ export async function runMultiMethodBenchmark(
   );
 
   // Run sites concurrently (up to 2 at a time)
-  const SITE_CONCURRENCY = 2;
+  // Run sites concurrently (configurable via options.siteConcurrency, default 2)
+  const SITE_CONCURRENCY = Math.max(1, Math.min(8, options?.siteConcurrency ?? 2));
   const siteEntries = [...siteTasks.entries()];
   const siteResultsMap = new Map<string, { domain: string; url: string; methods: MethodResult[] }>();
 
@@ -206,6 +207,7 @@ export async function runMultiMethodBenchmark(
         }
 
         const taskDoc = method === "none" || method === "a11y-tree" ? undefined : doc;
+        // Note: "a11y-first-message" intentionally receives docs (injected in first user message)
         const runOptions = verifyResults ? { verify: true } : undefined;
 
         if (runsPerTask <= 1) {

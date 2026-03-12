@@ -58,6 +58,9 @@ export async function executeA11yAction(
     case "click": {
       if (role && name) {
         await page.getByRole(role as Parameters<Page["getByRole"]>[0], { name }).first().click({ timeout: 5000 });
+      } else if (role) {
+        // Role provided but no name — match by role only (avoids wrong-element text fallback)
+        await page.getByRole(role as Parameters<Page["getByRole"]>[0]).first().click({ timeout: 5000 });
       } else if (name) {
         await page.getByText(name, { exact: false }).first().click({ timeout: 5000 });
       }

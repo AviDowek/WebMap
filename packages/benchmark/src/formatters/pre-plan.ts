@@ -19,9 +19,9 @@ export async function generatePrePlan(
   const fullGuide = formatFullGuide(doc);
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 300,
-    system: "You are a planning assistant. Given a website guide and a task, produce a concise step-by-step plan (max 5 steps) for a vision-based browser agent to complete the task. Each step should describe what to look for visually and what action to take. Be specific but brief.",
+    system: [{ type: "text" as const, text: "You are a planning assistant. Given a website guide and a task, produce a concise step-by-step plan (max 5 steps) for a vision-based browser agent to complete the task. Each step should describe what to look for visually and what action to take. Be specific but brief.", cache_control: { type: "ephemeral" as const } }],
     messages: [
       {
         role: "user",

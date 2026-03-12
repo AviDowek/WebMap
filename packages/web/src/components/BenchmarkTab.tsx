@@ -16,8 +16,10 @@ import {
   DOC_METHOD_DESCRIPTIONS,
   METHOD_COLORS,
   ALL_DOC_METHODS,
+  METHOD_AVG_TOKENS,
 } from "../lib/constants";
 import { btnStyle, primaryBtn, inputStyle } from "../lib/styles";
+import { computeEstimatedCost, formatUsd } from "../lib/utils";
 import MultiMethodResults from "./MultiMethodResults";
 import BenchmarkResults from "./BenchmarkResults";
 
@@ -61,11 +63,25 @@ export default function BenchmarkTab() {
   const [generatingSites, setGeneratingSites] = useState(false);
   const [runsPerTask, setRunsPerTask] = useState(1);
   const [verifyResults, setVerifyResults] = useState(false);
+  // Dataset config
+  const [taskSource, setTaskSource] = useState<"custom" | "dataset">("custom");
+  const [datasetId, setDatasetId] = useState("mind2web");
+  const [datasetSubset, setDatasetSubset] = useState(50);
+  const [datasetInfo, setDatasetInfo] = useState<Array<{ id: string; name: string; taskCount: number; avgTokensPerTask: number; requiresDocker: boolean; requiresCredentials: boolean; description: string }>>([]);
+  const [datasetBaseUrl, setDatasetBaseUrl] = useState("");
+  // Parallelism
+  const [siteConcurrency, setSiteConcurrency] = useState(2);
+  const [methodParallel, setMethodParallel] = useState(true);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     loadSites();
     loadHistory();
     loadMultiHistory();
+    fetch(`${API_BASE}/api/benchmark/datasets`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d?.datasets) setDatasetInfo(d.datasets); })
+      .catch(() => {});
     // Reconnect to running benchmark if page was refreshed
     const savedBenchId = localStorage.getItem("activeBenchmarkId");
     const savedMulti = localStorage.getItem("activeBenchmarkMulti") === "true";
@@ -311,17 +327,27 @@ export default function BenchmarkTab() {
     setStatus({ state: "running", phase: "Starting multi-method benchmark...", multiMethod: true });
 
     try {
+      const isDataset = taskSource === "dataset";
+      const selectedDataset = datasetInfo.find((d) => d.id === datasetId);
       const res = await fetch(`${API_BASE}/api/benchmark/multi`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           methods: selectedMethods,
-          generateSites: generateNewSites,
-          useConfiguredSites: !generateNewSites,
-          siteCount: generateNewSites ? siteCount : undefined,
-          tasksPerSite,
+          generateSites: isDataset ? false : generateNewSites,
+          useConfiguredSites: isDataset ? false : !generateNewSites,
+          siteCount: !isDataset && generateNewSites ? siteCount : undefined,
+          tasksPerSite: isDataset ? undefined : tasksPerSite,
           runsPerTask: runsPerTask > 1 ? runsPerTask : undefined,
           verifyResults: verifyResults || undefined,
+          siteConcurrency: siteConcurrency !== 2 ? siteConcurrency : undefined,
+          methodParallel: !methodParallel ? false : undefined,
+          datasetConfig: isDataset ? {
+            source: datasetId,
+            subset: datasetSubset,
+            ...(selectedDataset?.requiresDocker && datasetBaseUrl ? { dockerBaseUrl: datasetBaseUrl } : {}),
+            ...(selectedDataset?.requiresCredentials && datasetBaseUrl ? { credentials: { baseUrl: datasetBaseUrl } } : {}),
+          } : undefined,
         }),
       });
 
@@ -496,53 +522,161 @@ export default function BenchmarkTab() {
               </div>
             </div>
 
-            {/* Site Count & Tasks Per Site */}
-            <div style={{ display: "flex", gap: 24, marginBottom: 20 }}>
-              <div>
-                <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
-                  Number of sites:
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={siteCount}
-                  onChange={(e) => setSiteCount(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
-                  style={{ ...inputStyle, fontSize: 14, padding: "8px 12px", width: 80 }}
-                />
+            {/* Task Source */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 10 }}>
+                Task Source:
+              </label>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                {(["custom", "dataset"] as const).map((src) => (
+                  <button
+                    key={src}
+                    onClick={() => setTaskSource(src)}
+                    style={{
+                      ...btnStyle,
+                      fontSize: 13,
+                      padding: "7px 16px",
+                      backgroundColor: taskSource === src ? "#1a2a4a" : "#1a1a1a",
+                      color: taskSource === src ? "#3b82f6" : "#888",
+                      border: taskSource === src ? "1px solid #3b82f6" : "1px solid #333",
+                      fontWeight: taskSource === src ? 600 : 400,
+                    }}
+                  >
+                    {src === "custom" ? "Custom Sites" : "Industry Benchmark"}
+                  </button>
+                ))}
               </div>
-              <div>
-                <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
-                  Tasks per site:
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={5}
-                  value={tasksPerSite}
-                  onChange={(e) => setTasksPerSite(Math.max(1, Math.min(5, parseInt(e.target.value) || 1)))}
-                  style={{ ...inputStyle, fontSize: 14, padding: "8px 12px", width: 80 }}
-                />
-              </div>
-              <div>
-                <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
-                  Runs per task:
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={5}
-                  value={runsPerTask}
-                  onChange={(e) => setRunsPerTask(Math.max(1, Math.min(5, parseInt(e.target.value) || 1)))}
-                  style={{ ...inputStyle, fontSize: 14, padding: "8px 12px", width: 80 }}
-                />
-              </div>
-              <div style={{ display: "flex", alignItems: "flex-end" }}>
-                <span style={{ color: "#666", fontSize: 12, paddingBottom: 10 }}>
-                  Total CUA executions: {siteCount * tasksPerSite * selectedMethods.length * runsPerTask} ({siteCount} sites x {tasksPerSite} tasks x {selectedMethods.length} methods{runsPerTask > 1 ? ` x ${runsPerTask} runs` : ""})
-                </span>
-              </div>
+
+              {taskSource === "dataset" && (
+                <div style={{ backgroundColor: "#0a0a0a", border: "1px solid #1e3a5f", borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+                    <div style={{ flex: "1 1 220px" }}>
+                      <label style={{ color: "#888", fontSize: 12, display: "block", marginBottom: 6 }}>Dataset:</label>
+                      <select
+                        value={datasetId}
+                        onChange={(e) => setDatasetId(e.target.value)}
+                        style={{ ...inputStyle, fontSize: 13, padding: "8px 12px", width: "100%" }}
+                      >
+                        {datasetInfo.length > 0
+                          ? datasetInfo.map((d) => (
+                              <option key={d.id} value={d.id}>
+                                {d.name} ({d.taskCount.toLocaleString()} tasks)
+                                {d.requiresDocker ? " [Docker]" : ""}
+                                {d.requiresCredentials ? " [SaaS]" : ""}
+                              </option>
+                            ))
+                          : [
+                              <option key="mind2web" value="mind2web">Mind2Web Online (300 tasks)</option>,
+                              <option key="webbench" value="webbench">WebBench 2025 (2,454 tasks)</option>,
+                              <option key="webarena" value="webarena">WebArena-Verified (812 tasks) [Docker]</option>,
+                              <option key="webchore-arena" value="webchore-arena">WebChoreArena (532 tasks) [Docker]</option>,
+                              <option key="visual-webarena" value="visual-webarena">VisualWebArena (910 tasks) [Docker]</option>,
+                              <option key="workarena" value="workarena">WorkArena (29 tasks) [SaaS]</option>,
+                            ]}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ color: "#888", fontSize: 12, display: "block", marginBottom: 6 }}>Tasks to run:</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={500}
+                        value={datasetSubset}
+                        onChange={(e) => setDatasetSubset(Math.max(1, Math.min(500, parseInt(e.target.value) || 1)))}
+                        style={{ ...inputStyle, fontSize: 13, padding: "8px 12px", width: 90 }}
+                      />
+                    </div>
+                  </div>
+                  {/* Dataset description */}
+                  {(() => {
+                    const info = datasetInfo.find((d) => d.id === datasetId);
+                    if (!info) return null;
+                    return (
+                      <p style={{ color: "#666", fontSize: 12, margin: 0, lineHeight: 1.5 }}>
+                        {info.description}
+                        {info.requiresDocker && (
+                          <span style={{ color: "#f59e0b", marginLeft: 6 }}>
+                            Requires Docker. Setup: <code style={{ fontSize: 11 }}>github.com/{info.id === "webarena" ? "web-arena-x/webarena" : info.id === "webchore-arena" ? "WebChoreArena/WebChoreArena" : "web-arena-x/visualwebarena"}</code>
+                          </span>
+                        )}
+                        {info.requiresCredentials && (
+                          <span style={{ color: "#f59e0b", marginLeft: 6 }}>Requires ServiceNow instance.</span>
+                        )}
+                      </p>
+                    );
+                  })()}
+                  {/* Base URL for Docker/SaaS datasets */}
+                  {(() => {
+                    const info = datasetInfo.find((d) => d.id === datasetId);
+                    if (!info?.requiresDocker && !info?.requiresCredentials) return null;
+                    return (
+                      <div>
+                        <label style={{ color: "#888", fontSize: 12, display: "block", marginBottom: 6 }}>
+                          {info?.requiresDocker ? "Docker Base URL:" : "ServiceNow Instance URL:"}
+                        </label>
+                        <input
+                          type="text"
+                          value={datasetBaseUrl}
+                          onChange={(e) => setDatasetBaseUrl(e.target.value)}
+                          placeholder={info?.requiresDocker ? "http://localhost" : "https://dev12345.service-now.com"}
+                          style={{ ...inputStyle, fontSize: 13, padding: "8px 12px", width: "100%", maxWidth: 400 }}
+                        />
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
             </div>
+
+            {/* Site Count & Tasks Per Site — hidden in dataset mode */}
+            {taskSource === "custom" && (
+              <div style={{ display: "flex", gap: 24, marginBottom: 20 }}>
+                <div>
+                  <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
+                    Number of sites:
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={siteCount}
+                    onChange={(e) => setSiteCount(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
+                    style={{ ...inputStyle, fontSize: 14, padding: "8px 12px", width: 80 }}
+                  />
+                </div>
+                <div>
+                  <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
+                    Tasks per site:
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={5}
+                    value={tasksPerSite}
+                    onChange={(e) => setTasksPerSite(Math.max(1, Math.min(5, parseInt(e.target.value) || 1)))}
+                    style={{ ...inputStyle, fontSize: 14, padding: "8px 12px", width: 80 }}
+                  />
+                </div>
+                <div>
+                  <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
+                    Runs per task:
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={5}
+                    value={runsPerTask}
+                    onChange={(e) => setRunsPerTask(Math.max(1, Math.min(5, parseInt(e.target.value) || 1)))}
+                    style={{ ...inputStyle, fontSize: 14, padding: "8px 12px", width: 80 }}
+                  />
+                </div>
+                <div style={{ display: "flex", alignItems: "flex-end" }}>
+                  <span style={{ color: "#666", fontSize: 12, paddingBottom: 10 }}>
+                    Total CUA executions: {siteCount * tasksPerSite * selectedMethods.length * runsPerTask} ({siteCount} sites x {tasksPerSite} tasks x {selectedMethods.length} methods{runsPerTask > 1 ? ` x ${runsPerTask} runs` : ""})
+                  </span>
+                </div>
+              </div>
+            )}
 
             {/* Reliability Options */}
             <div style={{ display: "flex", gap: 24, marginBottom: 20, alignItems: "center" }}>
@@ -561,28 +695,156 @@ export default function BenchmarkTab() {
               </span>
             </div>
 
+            {/* Cost Estimate Card */}
+            {selectedMethods.length > 0 && (() => {
+              const taskCount = taskSource === "dataset"
+                ? datasetSubset
+                : siteCount * tasksPerSite;
+              const avgTokensOverride = taskSource === "dataset"
+                ? datasetInfo.find((d) => d.id === datasetId)?.avgTokensPerTask
+                : undefined;
+              const estimate = computeEstimatedCost(selectedMethods as import("../lib/types").DocMethod[], taskCount, avgTokensOverride);
+              const concurrencyWarning = siteConcurrency * selectedMethods.length > 20;
+              return (
+                <div style={{
+                  backgroundColor: "#0a0f1a",
+                  border: "1px solid #1e3a5f",
+                  borderRadius: 8,
+                  padding: 16,
+                  marginBottom: 20,
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: "#93c5fd" }}>
+                      Estimated Cost — {taskCount} tasks × {selectedMethods.length} methods
+                    </span>
+                    {runsPerTask > 1 && (
+                      <span style={{ fontSize: 11, color: "#666" }}>per-run avg (×{runsPerTask} runs)</span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 32, marginBottom: 10, flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ color: "#888", fontSize: 11, marginBottom: 2 }}>Without caching</div>
+                      <div style={{ fontSize: 18, fontWeight: 600, color: "#ededed" }}>{formatUsd(estimate.uncachedTotal)}</div>
+                    </div>
+                    <div>
+                      <div style={{ color: "#888", fontSize: 11, marginBottom: 2 }}>With prompt caching</div>
+                      <div style={{ fontSize: 18, fontWeight: 600, color: "#22c55e" }}>{formatUsd(estimate.cachedTotal)} <span style={{ fontSize: 12, color: "#4ade80", fontWeight: 400 }}>~50% savings</span></div>
+                    </div>
+                  </div>
+                  <details style={{ marginTop: 4 }}>
+                    <summary style={{ color: "#555", fontSize: 12, cursor: "pointer", userSelect: "none" }}>Per-method breakdown</summary>
+                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 3 }}>
+                      {selectedMethods.map((m) => (
+                        <div key={m} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#777" }}>
+                          <span style={{ color: METHOD_COLORS[m as import("../lib/types").DocMethod] || "#888" }}>{DOC_METHOD_LABELS[m as import("../lib/types").DocMethod]}</span>
+                          <span>{formatUsd(estimate.perMethod[m as import("../lib/types").DocMethod] ?? 0)} ({formatUsd((estimate.perMethod[m as import("../lib/types").DocMethod] ?? 0) / taskCount)}/task)</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                  {concurrencyWarning && (
+                    <div style={{ marginTop: 8, color: "#f59e0b", fontSize: 12 }}>
+                      ⚠ High concurrency ({siteConcurrency} sites × {selectedMethods.length} methods = {siteConcurrency * selectedMethods.length} simultaneous API calls). May hit rate limits.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Advanced: Parallelism Config */}
+            <div style={{ marginBottom: 20 }}>
+              <button
+                onClick={() => setShowAdvanced((v) => !v)}
+                style={{ ...btnStyle, fontSize: 12, padding: "5px 12px", color: "#666", border: "1px solid #222" }}
+              >
+                {showAdvanced ? "▲" : "▼"} Advanced Options
+              </button>
+              {showAdvanced && (
+                <div style={{ marginTop: 12, padding: 16, backgroundColor: "#0a0a0a", border: "1px solid #222", borderRadius: 8, display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-end" }}>
+                  <div>
+                    <label style={{ color: "#888", fontSize: 12, display: "block", marginBottom: 6 }}>
+                      Site concurrency (1–8):
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={8}
+                      value={siteConcurrency}
+                      onChange={(e) => setSiteConcurrency(Math.max(1, Math.min(8, parseInt(e.target.value) || 2)))}
+                      style={{ ...inputStyle, fontSize: 13, padding: "7px 10px", width: 70 }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ color: "#888", fontSize: 12, display: "block", marginBottom: 6 }}>
+                      Method execution:
+                    </label>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {([true, false] as const).map((parallel) => (
+                        <button
+                          key={String(parallel)}
+                          onClick={() => setMethodParallel(parallel)}
+                          style={{
+                            ...btnStyle,
+                            fontSize: 12,
+                            padding: "5px 12px",
+                            backgroundColor: methodParallel === parallel ? "#1a2a4a" : "#1a1a1a",
+                            color: methodParallel === parallel ? "#3b82f6" : "#666",
+                            border: methodParallel === parallel ? "1px solid #3b82f6" : "1px solid #333",
+                          }}
+                        >
+                          {parallel ? "Parallel" : "Sequential"}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ color: "#555", fontSize: 11, marginTop: 4 }}>
+                      {methodParallel ? "Methods run in parallel per task (faster)" : "Methods run one at a time (avoids rate limits)"}
+                    </div>
+                  </div>
+                  {taskSource === "dataset" && (
+                    <div>
+                      <label style={{ color: "#888", fontSize: 12, display: "block", marginBottom: 6 }}>
+                        Runs per task:
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={5}
+                        value={runsPerTask}
+                        onChange={(e) => setRunsPerTask(Math.max(1, Math.min(5, parseInt(e.target.value) || 1)))}
+                        style={{ ...inputStyle, fontSize: 13, padding: "7px 10px", width: 70 }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Run Buttons */}
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <button
-                onClick={() => handleMultiMethodRun(true)}
-                style={{
-                  ...primaryBtn(false),
-                  fontSize: 14,
-                }}
-              >
-                Generate {siteCount} Sites & Run Benchmark
-              </button>
-              {sites.length > 0 && (
+              {taskSource === "dataset" ? (
                 <button
                   onClick={() => handleMultiMethodRun(false)}
-                  style={{
-                    ...primaryBtn(false),
-                    fontSize: 14,
-                    backgroundColor: "#333",
-                  }}
+                  style={{ ...primaryBtn(false), fontSize: 14 }}
                 >
-                  Run on Configured Sites ({sites.length})
+                  Run {datasetInfo.find((d) => d.id === datasetId)?.name || datasetId} ({datasetSubset} tasks × {selectedMethods.length} methods)
                 </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => handleMultiMethodRun(true)}
+                    style={{ ...primaryBtn(false), fontSize: 14 }}
+                  >
+                    Generate {siteCount} Sites & Run Benchmark
+                  </button>
+                  {sites.length > 0 && (
+                    <button
+                      onClick={() => handleMultiMethodRun(false)}
+                      style={{ ...primaryBtn(false), fontSize: 14, backgroundColor: "#333" }}
+                    >
+                      Run on Configured Sites ({sites.length})
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>
