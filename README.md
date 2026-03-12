@@ -1,141 +1,128 @@
-# WebMap- An Experiment in Progress
+# WebMap
 
-AI-powered website documentation generator for AI agents. WebMap crawls websites using Playwright, extracts interactive elements and accessibility trees, and uses Claude to generate comprehensive structured documentation. It then has a multi-method benchmarking system that measures how different documentation injection strategies affect vision-based browser agent (CUA) performance.  The goal is identfying how each doc injection strategy affects results with the end goal of identfying one or more methods that can be used individually or combined, to improve on baseline CUA performance
+AI-powered website documentation generator + programmatic API discovery for browser automation agents. WebMap crawls websites using Playwright, extracts interactive elements and accessibility trees, and uses Claude to generate structured documentation. It includes a multi-method benchmarking system that measures how different strategies affect browser agent (CUA) performance, and a programmatic API generation system that auto-discovers typed functions for every interaction on a website.
 
-## Update
-This shows promise and indicates multiple, promising ways of improving on baseline CUA performance.     Putting it on hold due to the high cost of testing, one day of $200+ in token costs is enough :)   
+## What It Does
 
-## Features
+1. **Crawls websites** — Playwright captures DOM, interactive elements, accessibility trees, forms, navigation, and network requests
+2. **Generates documentation** — Claude analyzes pages to produce concise guides optimized for AI agent consumption
+3. **Discovers site APIs** — Active exploration (clicks dropdowns, expands menus, intercepts network calls) produces typed, self-tested functions for every interactive element
+4. **Benchmarks strategies** — 11 different approaches to browser automation compared head-to-head on real websites
+5. **Self-improves** — When API functions fail during CUA execution, successful fallback actions are captured and used to update the APIs
 
-- **Website Crawling** — Playwright-based crawler captures DOM, interactive elements, accessibility trees, forms, and page structure
-- **LLM Analysis** — Claude analyzes each page to identify workflows, forms, navigation patterns, visual layout, and navigation strategies
-- **CUA Mode** — Specialized documentation optimized for vision-based browser agents (Claude Computer Use Agent), generating concise visual layout descriptions and navigation hints instead of verbose element catalogs
-- **Markdown Documentation** — Generates structured docs with site maps, page hierarchies, interactive elements, forms, and detected workflows
-- **REST API** — Hono-based server with job queue, 1-hour TTL caching, rate limiting, batch processing, SSRF protection, and optional API key auth
-- **CLI Tool** — Generate docs from the command line with configurable depth, page limits, and output directory
-- **Web Dashboard** — Next.js UI with three tabs: single-site generation, batch testing, and multi-method benchmarking
-- **MCP Server** — Model Context Protocol integration exposing `get_site_docs`, `get_page_docs`, and `get_workflow` tools
-- **Multi-Method Benchmarking** — Compare 7 different documentation injection strategies across multiple sites using Claude CUA
-- **Reliability Features** — Optional multi-run with majority vote, automated success verification via independent LLM judge, Wilson confidence intervals
-
-## Multi-Method Benchmark System
-
-The benchmark tests how different ways of providing documentation to a vision-based browser agent affect task completion. It uses Claude's Computer Use Agent (CUA) which controls a real browser via screenshots and coordinate clicks.
-
-### Documentation Injection Methods
-
-| Method | Description | Token Cost |
-|---|---|---|
-| **Baseline** | No documentation — pure vision-based navigation | 0 extra |
-| **Micro Guide** | ~100 token summary in system prompt (domain + one-line nav hint) | ~100/turn |
-| **Full Guide** | ~400 token guide with visual layout, navigation strategy, and site map in system prompt | ~400/turn |
-| **First Message** | Full docs injected in the first user message only (doesn't compound across turns) | One-time |
-| **Pre-Plan** | Uses docs to generate a task-specific step-by-step plan via a separate Claude call before CUA starts | One-time + ~150/turn |
-| **A11y Tree** | Text-only accessibility tree instead of screenshots (uses Haiku) | Variable |
-| **Hybrid** | Both accessibility tree + screenshots (Sonnet) | Variable |
-
-### How It Works
-
-1. **Site Generation** — AI generates a diverse list of websites across categories (docs, news, reference, developer tools, e-commerce, government, educational, community)
-2. **Crawling & Documentation** — Each site is crawled with Playwright and documented with Claude in CUA mode
-3. **Task Generation** — AI creates realistic browser automation tasks for each site (navigation, search, form-fill, multi-step, information extraction)
-4. **Benchmark Execution** — Every task is run with every selected method, using a real headless browser controlled by Claude CUA
-5. **Results** — Per-site and overall metrics: success rate, average tokens, duration, steps, and delta vs baseline
-
-### Reliability Features
-
-- **Multiple Runs** — Run each task N times per method. Success is determined by majority vote. Results include Wilson score confidence intervals.
-- **Automated Verification** — An independent LLM judge reviews the final screenshot + accessibility tree against the task's success criteria, overriding self-reported results when confident. Verification overhead (tokens/time) is tracked separately from CUA metrics.
-
-### Key Insight
-
-System prompt content compounds — it's re-sent with every API call. Over 18+ steps, a 400-token guide costs ~7,200 extra input tokens. The first-message and pre-plan methods avoid this compounding effect.
-
-## Benchmark Results
-
-Results from a run across **20 real websites** (60 tasks each, 420 total) including developer.mozilla.org, Wikipedia, GitHub, Amazon, BBC, Khan Academy, eBay, and others. Each task is a realistic browser automation goal (search, navigate, extract information, multi-step workflows).
-
-### Overall Method Comparison
-
-| Method | Success Rate | Avg Tokens | Avg Duration | Avg Steps | vs Baseline |
-|---|---|---|---|---|---|
-| **Baseline** | 55.0% (33/60) | 120,339 | 119.5s | 10.1 | — |
-| **Micro Guide** | 53.3% (32/60) | 120,529 | 121.7s | 10.0 | -1.7pp |
-| **Full Guide** | 50.0% (30/60) | 131,191 | 124.3s | 10.5 | -5.0pp |
-| **First Message** | 58.3% (35/60) | 132,331 | 118.5s | 9.8 | +3.3pp |
-| **Pre-Plan** | 51.7% (31/60) | 105,497 | 107.0s | 9.1 | -3.3pp |
-| **A11y Tree** | **61.7%** (37/60) | 142,768 | **41.4s** | **5.0** | **+6.7pp** |
-| **Hybrid** | 48.3% (29/60) | 381,972 | 98.0s | 7.5 | -6.7pp |
-
-### Delta vs Baseline
-
-| Method | Success Delta | Token Delta | Speed |
-|---|---|---|---|
-| Micro Guide | -1.7pp | +0.2% | 0.98x |
-| Full Guide | -5.0pp | +9.0% | 0.96x |
-| First Message | +3.3pp | +10.0% | 1.01x |
-| Pre-Plan | -3.3pp | -12.3% | **1.12x** |
-| A11y Tree | **+6.7pp** | +18.6% | **2.88x** |
-| Hybrid | -6.7pp | +217.4% | 1.22x |
-
-### Key Findings
-
-1. **A11y Tree is the clear winner** — highest success rate (61.7%), fastest execution (2.88x baseline speed), and fewest steps (5.0 avg). It uses Haiku with text-only accessibility trees instead of screenshots, making it both cheaper per-step and more efficient.
-
-2. **System prompt injection hurts more than it helps** — Both Micro Guide (-1.7pp) and Full Guide (-5.0pp) performed *worse* than baseline. The compounding token cost of system prompt content across 10+ steps adds noise without enough navigation value.
-
-3. **First Message is the best doc injection approach** — +3.3pp improvement with no compounding cost. Docs are sent once and don't inflate subsequent turns.
-
-4. **Pre-Plan trades accuracy for speed** — 12.3% fewer tokens and 1.12x faster, but slightly lower success rate. The upfront planning step saves steps during execution.
-
-5. **Hybrid is expensive and underperforms** — 217% more tokens than baseline for lower success. Sending both accessibility trees and screenshots per turn is too much context.
-
-6. **Some sites are simply hard** — stackoverflow.com, reddit.com, npmjs.com, and hackernews all scored 0% across every method, likely due to anti-bot protections or aggressive JS rendering that blocks headless browsers.
-
-### Per-Site Heatmap
-
-Sites where docs made the biggest difference (best method vs baseline):
-
-| Site | Baseline | Best Method | Best Rate | Delta |
-|---|---|---|---|---|
-| www.amazon.com | 33.3% | Full Guide | 100.0% | +66.7pp |
-| www.bbc.com | 66.7% | First Message / Pre-Plan / A11y | 100.0% | +33.3pp |
-| www.khanacademy.org | 66.7% | Micro / First Msg / Pre-Plan / A11y | 100.0% | +33.3pp |
-| www.edx.org | 100.0% | Baseline / A11y | 100.0% | 0pp |
-| en.wikipedia.org | 100.0% | Baseline / Micro / Full / First / A11y | 100.0% | 0pp |
-
-## Project Structure
+## Packages
 
 ```
 packages/
   core/        — Crawling engine + doc generation (Playwright, Claude API)
+  api-gen/     — Programmatic site API discovery, generation, testing, and learning
+  benchmark/   — Multi-method benchmark runner, metrics, and reporting
   api/         — REST API server (Hono) with benchmark orchestration
+  web/         — Next.js dashboard (Generate, Batch Test, Benchmark, APIs tabs)
   cli/         — Command-line interface
-  web/         — Next.js web dashboard
   mcp/         — Model Context Protocol server
-  benchmark/   — Benchmark runner, task generation, and reporting
 ```
 
-## Prerequisites
+## Benchmark Methods
+
+11 CUA methods compared across real websites:
+
+| Method | Model | Mode | Description |
+|---|---|---|---|
+| **Baseline** | Sonnet | Vision | No docs — pure screenshot navigation |
+| **Micro Guide** | Sonnet | Vision | ~100 token nav hint in system prompt every turn |
+| **Full Guide** | Sonnet | Vision | ~400 token guide with layout + site map in system prompt |
+| **First Message** | Sonnet | Vision | Full docs in first user message only (no compounding) |
+| **Pre-Plan** | Haiku+Sonnet | Vision | Haiku generates task plan, Sonnet executes with plan in system prompt |
+| **A11y Tree** | Haiku | Text | Accessibility tree instead of screenshots |
+| **Hybrid** | Sonnet | Both | Screenshots + accessibility tree together |
+| **A11y+FirstMsg** | Haiku | Text | A11y tree + first-message doc injection |
+| **Haiku Vision** | Haiku | Vision | Haiku with computer_use tool (3x cheaper than Sonnet) |
+| **Cascade** | Haiku→Sonnet | Vision | Starts with Haiku, escalates to Sonnet when stuck |
+| **Programmatic** | Haiku | Text | Pre-built site API functions instead of screenshots |
+
+## Programmatic Site API System
+
+The `api-gen` package crawls a website and generates typed API functions for every interactive element, then provides them as tools for CUA agents. This replaces screenshot→click loops with direct function calls.
+
+### How It Works
+
+**Discovery** — Active crawl with Playwright (up to 150 pages):
+- Clicks every dropdown/combobox to capture all options
+- Expands collapsed elements to discover hidden content
+- Intercepts XHR/fetch requests to find REST endpoints
+- Deduplicates URL patterns (`/api/products/123` → `/api/products/:id`)
+
+**Generation** — Two-phase function building:
+- Deterministic stubs from elements: buttons → `click_add_to_cart`, forms → `submit_login`, links → `navigate_to_products`, network endpoints → `api_post_cart`
+- LLM enrichment (Haiku): better descriptions, expected results, composite workflows (e.g., `search_and_filter`, `add_to_cart_then_checkout`)
+
+**Testing** — Automated self-test against live site:
+- Generates realistic test params (email → `test@example.com`, search → `laptop`)
+- Executes each function, compares before/after accessibility snapshots
+- Marks actions as verified-passed, verified-failed, or untested
+
+**Execution** — Per-step tool loading during CUA:
+- ~20 global nav actions always available
+- ~30-50 page-scoped actions matched by current URL
+- `discover_actions(query)` meta-tool for cross-page search
+- `fallback_browser_action` as escape hatch when APIs fail
+- Tools update every step as the agent navigates
+
+**Learning** — Self-improvement from failures:
+- Failed API calls → agent falls back to browser_action
+- Successful fallback sequences captured and converted to new API functions
+- Actions with 3+ failures marked stale and replaced with learned alternatives
+- Updated APIs cached for next run
+
+### Cost
+
+| Phase | Cost |
+|---|---|
+| Discovery crawl + exploration | $0 (Playwright only) |
+| LLM enrichment (150 pages) | ~$0.45 (Haiku) |
+| Self-testing (2000 actions) | ~$1.20 (Haiku) |
+| **One-time per domain** | **~$1.65** |
+| Per-task execution | ~$0.06-0.08 (Haiku) |
+
+## Benchmark Results
+
+Results from 20 real websites (60 tasks each) including Wikipedia, GitHub, Amazon, BBC, Khan Academy, eBay, and others.
+
+| Method | Success Rate | Avg Tokens | Avg Duration | Avg Steps | vs Baseline |
+|---|---|---|---|---|---|
+| **A11y Tree** | **61.7%** | 142,768 | **41.4s** | **5.0** | **+6.7pp** |
+| **First Message** | 58.3% | 132,331 | 118.5s | 9.8 | +3.3pp |
+| **Baseline** | 55.0% | 120,339 | 119.5s | 10.1 | — |
+| **Micro Guide** | 53.3% | 120,529 | 121.7s | 10.0 | -1.7pp |
+| **Pre-Plan** | 51.7% | 105,497 | 107.0s | 9.1 | -3.3pp |
+| **Full Guide** | 50.0% | 131,191 | 124.3s | 10.5 | -5.0pp |
+| **Hybrid** | 48.3% | 381,972 | 98.0s | 7.5 | -6.7pp |
+
+### Key Findings
+
+1. **A11y Tree wins** — Highest success (61.7%), fastest (2.88x baseline), fewest steps (5.0). Text-only accessibility trees beat vision for structured navigation.
+2. **System prompt injection hurts** — Micro Guide (-1.7pp) and Full Guide (-5.0pp) both worse than baseline. Compounding tokens across 10+ steps add noise.
+3. **First Message works** — +3.3pp with no compounding. Docs sent once in the first user message.
+4. **Hybrid is expensive and bad** — 217% more tokens for lower success. Too much context per turn.
+5. **Some sites are hard** — stackoverflow.com, reddit.com, npmjs.com scored 0% across all methods (anti-bot protections).
+
+## Setup
+
+### Prerequisites
 
 - Node.js 22+
 - npm 10.9+
 - [Anthropic API key](https://console.anthropic.com/)
 
-## Setup
+### Install
 
 ```bash
-# Install dependencies
 npm install
-
-# Install Playwright browsers
 npx playwright install chromium
-
-# Copy environment file and add your API key
 cp .env.example .env
+# Edit .env and set ANTHROPIC_API_KEY
 ```
-
-Edit `.env` and set your `ANTHROPIC_API_KEY`.
 
 ### Environment Variables
 
@@ -152,17 +139,14 @@ Edit `.env` and set your `ANTHROPIC_API_KEY`.
 ### Development
 
 ```bash
-# Start all packages in dev mode
-npm run dev
-
 # Build all packages
 npm run build
 
-# Run tests
-npm run test
+# Start all packages in dev mode
+npm run dev
 
-# Lint
-npm run lint
+# Web dashboard at http://localhost:3000
+# API server at http://localhost:3001
 ```
 
 ### CLI
@@ -171,80 +155,66 @@ npm run lint
 npm run cli -- <url> [options]
 ```
 
-Options:
-
 | Flag | Description | Default |
 |---|---|---|
 | `--depth <n>` | Crawl depth (1-5) | 3 |
-| `--max-pages <n>` | Max pages to crawl (1-100) | 50 |
+| `--max-pages <n>` | Max pages (1-100) | 50 |
 | `--output <dir>` | Output directory | `./generated` |
-| `--model <model>` | Claude model to use | `claude-sonnet-4-20250514` |
+| `--model <model>` | Claude model | `claude-sonnet-4-20250514` |
 
-Example:
-
-```bash
-npm run cli -- https://example.com --depth 3 --max-pages 50 --output ./docs
-```
-
-### API
-
-Start the API server:
-
-```bash
-cd packages/api
-npm run dev
-```
-
-Key endpoints:
+### API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/api/crawl` | Start a crawl job |
 | `GET` | `/api/status/:jobId` | Check job status |
-| `GET` | `/api/docs` | List all cached documentation |
-| `GET` | `/api/docs/:domain` | Get cached documentation for a domain |
-| `DELETE` | `/api/docs/:domain` | Delete cached documentation |
-| `POST` | `/api/docs/:domain/regenerate` | Regenerate docs from cached crawl data |
-| `POST` | `/api/batch` | Batch process multiple URLs |
-| `GET` | `/api/batch/status/:batchId` | Check batch job status |
-| `POST` | `/api/benchmark` | Run legacy A/B benchmark |
+| `GET` | `/api/docs/:domain` | Get cached documentation |
 | `POST` | `/api/benchmark/multi` | Run multi-method benchmark |
 | `GET` | `/api/benchmark/status/:benchId` | Check benchmark progress |
-| `GET` | `/api/benchmark/sites` | List configured benchmark sites |
-| `POST` | `/api/benchmark/sites` | Add a benchmark site |
-| `POST` | `/api/benchmark/sites/generate` | AI-generate diverse benchmark sites |
+| `POST` | `/api/benchmark/sites/generate` | AI-generate benchmark sites |
 | `POST` | `/api/benchmark/tasks/generate` | AI-generate tasks for a site |
-| `GET` | `/api/benchmark/multi/history` | List previous multi-method runs |
+| `GET` | `/api/benchmark/datasets` | List industry benchmark datasets |
+| `POST` | `/api/api-gen/discover` | Start API discovery for a URL |
+| `GET` | `/api/api-gen/status/:jobId` | Poll discovery job status |
+| `GET` | `/api/api-gen/domains` | List domains with generated APIs |
+| `GET` | `/api/api-gen/:domain` | Get full DomainAPI for a domain |
+| `POST` | `/api/api-gen/:domain/test` | Trigger self-test pipeline |
+| `DELETE` | `/api/api-gen/:domain` | Clear cached API |
 | `GET` | `/api/health` | Health check |
-| `GET` | `/{url}` | URL-prefix proxy — returns docs for any URL |
 
 ### Web Dashboard
 
-```bash
-cd packages/web
-npm run dev
-```
+Four tabs at [http://localhost:3000](http://localhost:3000):
 
-Open [http://localhost:3000](http://localhost:3000).
-
-The dashboard has three tabs:
-
-- **Generate** — Paste a URL, watch the crawl progress, and view/copy/download the generated markdown. Manage cached documentation.
-- **Batch Test** — Test WebMap against multiple websites at once (up to 20). See per-site results with page counts, element counts, token usage, and duration.
-- **Benchmark** — Configure and run multi-method benchmarks. Select which methods to test, set site count and tasks per site, generate sites with AI or use manually configured sites. View overall method comparison and per-site breakdowns with detailed per-task results.
+- **Generate** — Paste a URL, crawl it, view/copy/download generated documentation
+- **Batch Test** — Test across multiple websites at once (up to 20)
+- **Benchmark** — Configure and run multi-method benchmarks with custom or industry datasets. View method comparison tables, per-site heatmaps, and per-task breakdowns with cost tracking
+- **APIs** — Browse auto-generated site APIs. Discover APIs for new URLs, view actions per page with expandable detail (params, steps, expected results, reliability), run self-tests, export as JSON
 
 ### MCP Server
 
-The MCP server exposes three tools for Claude and other MCP-compatible clients:
+Three tools for Claude and MCP-compatible clients:
 
 - `get_site_docs(url)` — Crawl and generate full site documentation
 - `get_page_docs(url)` — Get documentation for a specific page
 - `get_workflow(domain, task)` — Get relevant workflow steps for a task
 
+### Industry Benchmark Datasets
+
+Six dataset loaders for standardized evaluation:
+
+| Dataset | Tasks | Source | Type |
+|---|---|---|---|
+| Mind2Web | 300 | HuggingFace | Live sites |
+| WebBench | 2,454 | HuggingFace | Live sites |
+| WebArena | 812 | Self-hosted Docker | Controlled |
+| WebChore Arena | 532 | Self-hosted Docker | Long-horizon |
+| Visual WebArena | 910 | Self-hosted Docker | Visual grounding |
+| WorkArena | 29 | ServiceNow SaaS | Enterprise |
+
 ## Docker
 
 ```bash
-# Start API and web dashboard
 docker-compose up -d
 ```
 
@@ -252,8 +222,6 @@ docker-compose up -d
 |---|---|---|
 | `api` | 3001 | REST API + crawling engine |
 | `web` | 3000 | Next.js dashboard |
-
-Set `ANTHROPIC_API_KEY` in your environment or `.env` file before running.
 
 ## License
 
