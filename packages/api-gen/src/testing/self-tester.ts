@@ -13,6 +13,8 @@ import { executeSiteAction } from "../retrieval/site-api-executor.js";
 const MAX_ACTIONS_PER_PAGE = 40;
 /** Timeout for each action test */
 const ACTION_TEST_TIMEOUT = 10000;
+/** Concurrent page testing */
+const CONCURRENT_PAGE_TESTS = 4;
 
 /**
  * Run the self-testing pipeline on a DomainAPI.
@@ -62,40 +64,53 @@ export async function runSelfTest(
   let tested = 0;
 
   try {
-    for (const [pageUrl, actions] of pageGroups) {
+    // Process pages in concurrent batches
+    const pageEntries = [...pageGroups.entries()];
+    for (let i = 0; i < pageEntries.length; i += CONCURRENT_PAGE_TESTS) {
       if (options.maxActions && tested >= options.maxActions) break;
 
-      const context = await browser.newContext({
-        viewport: { width: 1024, height: 768 },
-        ignoreHTTPSErrors: true,
-      });
-      const page = await context.newPage();
+      const batch = pageEntries.slice(i, i + CONCURRENT_PAGE_TESTS);
+      const batchPromises = batch.map(async ([pageUrl, actions]) => {
+        if (options.maxActions && tested >= options.maxActions) return [];
 
-      try {
-        // Navigate to page (use root URL for global actions)
-        const navUrl = pageUrl === "__global__" ? domainApi.rootUrl : pageUrl;
-        await page.goto(navUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-        await page.waitForTimeout(1000);
+        const context = await browser.newContext({
+          viewport: { width: 1024, height: 768 },
+          ignoreHTTPSErrors: true,
+        });
+        const page = await context.newPage();
+        const pageResults: ActionTestResult[] = [];
 
-        for (const action of actions.slice(0, MAX_ACTIONS_PER_PAGE)) {
-          if (options.maxActions && tested >= options.maxActions) break;
+        try {
+          const navUrl = pageUrl === "__global__" ? domainApi.rootUrl : pageUrl;
+          await page.goto(navUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+          await page.waitForTimeout(500);
 
-          const result = await testSingleAction(page, action, navUrl, options.apiKey);
-          results.push(result);
-          tested++;
+          for (const action of actions.slice(0, MAX_ACTIONS_PER_PAGE)) {
+            if (options.maxActions && tested >= options.maxActions) break;
 
-          options.onProgress?.(result, tested, totalToTest);
+            const result = await testSingleAction(page, action, navUrl, options.apiKey);
+            pageResults.push(result);
+            tested++;
 
-          // Navigate back after each test to reset state
-          try {
-            await page.goto(navUrl, { waitUntil: "domcontentloaded", timeout: 10000 });
-            await page.waitForTimeout(500);
-          } catch {
-            // If navigation fails, try to continue
+            options.onProgress?.(result, tested, totalToTest);
+
+            // Navigate back after each test to reset state
+            try {
+              await page.goto(navUrl, { waitUntil: "domcontentloaded", timeout: 10000 });
+              await page.waitForTimeout(300);
+            } catch {
+              // If navigation fails, try to continue
+            }
           }
+        } finally {
+          await context.close();
         }
-      } finally {
-        await context.close();
+        return pageResults;
+      });
+
+      const batchResults = await Promise.allSettled(batchPromises);
+      for (const r of batchResults) {
+        if (r.status === "fulfilled") results.push(...r.value);
       }
     }
   } finally {

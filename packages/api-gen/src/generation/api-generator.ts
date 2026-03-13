@@ -17,7 +17,7 @@ import { mergeExplorationResults } from "../discovery/active-crawler.js";
 /** Max pages to process for LLM enrichment (to control cost) */
 const MAX_ENRICHMENT_PAGES = 100;
 /** Batch size for parallel LLM calls */
-const ENRICHMENT_BATCH_SIZE = 5;
+const ENRICHMENT_BATCH_SIZE = 15;
 /** Model for enrichment */
 const ENRICHMENT_MODEL = "claude-haiku-4-5-20251001";
 

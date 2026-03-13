@@ -91,5 +91,5 @@ export const METHOD_IS_HAIKU: Record<DocMethod, boolean> = {
   "haiku-vision": true,
   "a11y-first-message": true,
   "cascade": false, // blended ~60% Haiku + 40% Sonnet
-  "programmatic": true,
+  "programmatic": false, // uses Sonnet for execution (better tool selection)
 };

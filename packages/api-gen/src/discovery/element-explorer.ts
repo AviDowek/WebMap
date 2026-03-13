@@ -94,14 +94,14 @@ async function exploreCombobox(page: Page, combo: InteractiveElement): Promise<s
   // Click to open
   await locator.click({ timeout: EXPLORE_TIMEOUT });
   // Wait for options to render
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(300);
 
   // Capture all options
   const options = await page.locator("[role=option]").allTextContents();
 
   // Close by pressing Escape
   await page.keyboard.press("Escape");
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(100);
 
   return options.filter(o => o.trim().length > 0);
 }
@@ -128,7 +128,7 @@ async function exploreExpandable(
     { name: element.name }
   ).first();
   await locator.click({ timeout: EXPLORE_TIMEOUT });
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(300);
 
   // Capture after snapshot
   let afterSnapshot: string;
@@ -144,7 +144,7 @@ async function exploreExpandable(
   // Collapse back
   try {
     await locator.click({ timeout: EXPLORE_TIMEOUT });
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(100);
   } catch {
     // May already be collapsed or element moved
     await page.keyboard.press("Escape");
@@ -168,7 +168,7 @@ async function exploreTabGroup(
 
       const beforeSnapshot = await page.locator("body").ariaSnapshot();
       await locator.click({ timeout: EXPLORE_TIMEOUT });
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(300);
       const afterSnapshot = await page.locator("body").ariaSnapshot();
 
       const newElements = diffSnapshots(beforeSnapshot, afterSnapshot);

@@ -526,7 +526,8 @@ async function runProgrammaticTask(
   let apiCallCount = 0;
   let visionFallbackCount = 0;
   const siteApiFunctionsCalled: string[] = [];
-  const currentModel = "claude-haiku-4-5-20251001";
+  // Sonnet for execution — better tool selection and multi-step reasoning
+  const currentModel = "claude-sonnet-4-20250514";
 
   const systemPromptText = `You are a browser automation agent with pre-built functions for this website.
 

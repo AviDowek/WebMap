@@ -15,7 +15,7 @@ import { explorePage } from "./element-explorer.js";
 /** Default limits for API discovery crawl */
 const DEFAULT_MAX_PAGES = 150;
 const DEFAULT_MAX_DEPTH = 4;
-const CONCURRENT_EXPLORATION = 3;
+const CONCURRENT_EXPLORATION = 6;
 
 /**
  * Run an enhanced API discovery crawl.
@@ -128,7 +128,7 @@ async function explorePageWithInterception(
       waitUntil: "domcontentloaded",
       timeout: 15000,
     });
-    await page.waitForTimeout(1000); // Let XHR requests fire
+    await page.waitForTimeout(500); // Let XHR requests fire
 
     // Active exploration
     if (options.activeExploration && pageData.elements.length > 0) {

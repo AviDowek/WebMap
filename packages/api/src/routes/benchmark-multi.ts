@@ -90,7 +90,7 @@ routes.post("/api/benchmark/datasets/estimate", async (c) => {
   const HAIKU_OUTPUT = 5.0 / 1_000_000;
   const SONNET_INPUT = 3.0 / 1_000_000;
   const SONNET_OUTPUT = 15.0 / 1_000_000;
-  const HAIKU_METHODS = new Set(["a11y-tree", "haiku-vision", "a11y-first-message", "programmatic"]);
+  const HAIKU_METHODS = new Set(["a11y-tree", "haiku-vision", "a11y-first-message"]);
   // Cascade: blended ~60% Haiku + 40% Sonnet
   const INPUT_RATIO = 0.95;
   const OUTPUT_RATIO = 0.05;
