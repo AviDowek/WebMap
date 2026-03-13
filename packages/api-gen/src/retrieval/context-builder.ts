@@ -80,15 +80,8 @@ export function buildToolsForStep(
   const pageScoped = selected.filter(c => c.priority === 3).length;
   const global = selected.filter(c => c.priority === 2).length;
   const systemAddendum = [
-    `You have ${tools.length} tools available:`,
-    `- ${pageScoped} page-specific functions for the current page`,
-    `- ${global} global navigation functions`,
-    `- discover_actions: search for functions on other pages`,
-    `- fallback_browser_action: generic browser action (use as last resort)`,
-    ``,
-    `Prefer page-specific functions over fallback_browser_action.`,
-    `If a function fails, check the error and try fallback_browser_action.`,
-    `Use discover_actions when you need to find functions on a different page.`,
+    `Available: ${pageScoped} page functions + ${global} navigation functions + discover_actions + fallback_browser_action.`,
+    `Use the site functions — they are pre-tested and reliable. Use discover_actions("keyword") to find functions on other pages.`,
   ].join("\n");
 
   return { tools, actionMap, systemAddendum };

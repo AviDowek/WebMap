@@ -528,11 +528,16 @@ async function runProgrammaticTask(
   const siteApiFunctionsCalled: string[] = [];
   const currentModel = "claude-haiku-4-5-20251001";
 
-  const systemPromptText = `You are a browser automation agent with access to pre-built site-specific functions.
-Use these functions to complete tasks efficiently. Each function performs verified
-actions on this website. Prefer site functions over fallback_browser_action.
-If a function fails, try fallback_browser_action with role/name from the error.
-Use discover_actions to find functions on other pages.
+  const systemPromptText = `You are a browser automation agent with pre-built functions for this website.
+
+RULES:
+1. ALWAYS use the site-specific functions (like search_products, click_add_to_cart, navigate_to_checkout, etc.) — they are reliable and fast.
+2. If a function fails, try calling it again with adjusted parameters before considering alternatives.
+3. Use discover_actions("keyword") to find functions on other pages — e.g. discover_actions("cart") or discover_actions("login").
+4. Only use fallback_browser_action as an absolute last resort after retrying the site function.
+5. When you see "TASK_COMPLETE" criteria are met, output TASK_COMPLETE immediately.
+
+The available functions change as you navigate between pages. After each action, you'll get an updated accessibility tree showing the page state.
 
 ${baseInstructions}`;
 
@@ -680,7 +685,7 @@ ${baseInstructions}`;
             toolResults.push({
               type: "tool_result",
               tool_use_id: toolUse.id,
-              content: `Function failed: ${result.error}\n\nTry using fallback_browser_action instead.\n\nPage accessibility tree:\n${snapshot}`,
+              content: `Function "${toolUse.name}" failed: ${result.error}\n\nRetry with different parameters, or try discover_actions to find an alternative function.\n\nPage accessibility tree:\n${snapshot}`,
               is_error: true,
             });
           }
@@ -699,7 +704,7 @@ ${baseInstructions}`;
           toolResults.push({
             type: "tool_result",
             tool_use_id: toolUse.id,
-            content: `Function error: ${errMsg}\n\nTry using fallback_browser_action instead.`,
+            content: `Function "${toolUse.name}" error: ${errMsg}\n\nRetry with different parameters, or use discover_actions to find an alternative.`,
             is_error: true,
           });
         }

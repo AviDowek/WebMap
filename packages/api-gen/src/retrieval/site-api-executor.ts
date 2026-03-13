@@ -74,8 +74,10 @@ async function executeStep(
   switch (step.type) {
     case "click": {
       if (!step.selector) throw new Error("Click step requires a selector");
-      const { role, name } = parseSelector(step.selector);
-      if (role && name) {
+      const { role, name, cssSelector } = parseSelector(step.selector);
+      if (cssSelector) {
+        await page.locator(cssSelector).first().click({ timeout });
+      } else if (role && name) {
         await page.getByRole(role as Parameters<Page["getByRole"]>[0], { name })
           .first().click({ timeout });
       } else if (role) {
@@ -90,8 +92,10 @@ async function executeStep(
     case "fill": {
       if (!step.selector) throw new Error("Fill step requires a selector");
       const value = resolveTemplate(step.value || "", params);
-      const { role, name } = parseSelector(step.selector);
-      if (role && name) {
+      const { role, name, cssSelector } = parseSelector(step.selector);
+      if (cssSelector) {
+        await page.locator(cssSelector).first().fill(value, { timeout });
+      } else if (role && name) {
         await page.getByRole(role as Parameters<Page["getByRole"]>[0], { name })
           .first().fill(value, { timeout });
       } else if (name) {
@@ -103,8 +107,10 @@ async function executeStep(
     case "select": {
       if (!step.selector) throw new Error("Select step requires a selector");
       const value = resolveTemplate(step.value || "", params);
-      const { role, name } = parseSelector(step.selector);
-      if (role && name) {
+      const { role, name, cssSelector } = parseSelector(step.selector);
+      if (cssSelector) {
+        await page.locator(cssSelector).first().selectOption(value, { timeout });
+      } else if (role && name) {
         await page.getByRole(role as Parameters<Page["getByRole"]>[0], { name })
           .first().selectOption(value, { timeout });
       }
@@ -137,10 +143,17 @@ async function executeStep(
 
     case "hover": {
       if (!step.selector) throw new Error("Hover step requires a selector");
-      const { role, name } = parseSelector(step.selector);
-      if (role && name) {
+      const { role, name, cssSelector } = parseSelector(step.selector);
+      if (cssSelector) {
+        await page.locator(cssSelector).first().hover({ timeout });
+      } else if (role && name) {
         await page.getByRole(role as Parameters<Page["getByRole"]>[0], { name })
           .first().hover({ timeout });
+      } else if (role) {
+        await page.getByRole(role as Parameters<Page["getByRole"]>[0])
+          .first().hover({ timeout });
+      } else if (name) {
+        await page.getByText(name, { exact: false }).first().hover({ timeout });
       }
       break;
     }
@@ -164,13 +177,40 @@ async function executeStep(
 
 /**
  * Parse an a11y-style selector like 'role=button, name="Search"'.
+ * Also handles CSS selectors like [name="email"] as fallback.
  */
-function parseSelector(selector: string): { role?: string; name?: string } {
+function parseSelector(selector: string): { role?: string; name?: string; cssSelector?: string } {
+  // Handle CSS attribute selectors: [name="..."], #id, .class
+  if (selector.startsWith("[") || selector.startsWith("#") || selector.startsWith(".")) {
+    return { cssSelector: selector };
+  }
+
   const roleMatch = selector.match(/role=(\w+)/);
-  const nameMatch = selector.match(/name="([^"]*)"/);
+  // Use a more robust name extraction — handle escaped quotes and apostrophes
+  let name: string | undefined;
+  const nameIdx = selector.indexOf('name="');
+  if (nameIdx !== -1) {
+    const start = nameIdx + 6;
+    const end = selector.indexOf('"', start);
+    if (end !== -1) {
+      name = selector.slice(start, end);
+    }
+  }
+  // Also try single quotes
+  if (!name) {
+    const nameIdx2 = selector.indexOf("name='");
+    if (nameIdx2 !== -1) {
+      const start = nameIdx2 + 6;
+      const end = selector.indexOf("'", start);
+      if (end !== -1) {
+        name = selector.slice(start, end);
+      }
+    }
+  }
+
   return {
     role: roleMatch?.[1],
-    name: nameMatch?.[1],
+    name,
   };
 }
 

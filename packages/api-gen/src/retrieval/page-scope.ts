@@ -14,20 +14,37 @@ export function findPageForUrl(domainApi: DomainAPI, currentUrl: string): PageAP
   if (pages.length === 0) return null;
 
   let pathname: string;
+  let urlNoQuery: string;
   try {
-    pathname = new URL(currentUrl).pathname;
+    const parsed = new URL(currentUrl);
+    pathname = parsed.pathname;
+    // Strip trailing slash for consistent matching (but keep "/" as-is)
+    if (pathname.length > 1 && pathname.endsWith("/")) {
+      pathname = pathname.slice(0, -1);
+    }
+    urlNoQuery = `${parsed.origin}${pathname}`;
   } catch {
     return null;
   }
 
-  // Priority 1: Exact canonical URL match
+  // Priority 1: Exact canonical URL match (ignoring query params)
   for (const page of pages) {
-    if (page.canonicalUrl === currentUrl) return page;
+    if (page.canonicalUrl === currentUrl || page.canonicalUrl === urlNoQuery) return page;
   }
 
-  // Priority 2: Exact pathname match on pattern
+  // Also try stripping query from canonical URLs for matching
   for (const page of pages) {
-    if (page.urlPattern === pathname) return page;
+    try {
+      const canonicalPath = new URL(page.canonicalUrl).pathname.replace(/\/$/, "") || "/";
+      if (canonicalPath === pathname) return page;
+    } catch { /* skip */ }
+  }
+
+  // Priority 2: Exact pathname match on pattern (normalize trailing slashes)
+  for (const page of pages) {
+    const normalizedPattern = page.urlPattern.length > 1 && page.urlPattern.endsWith("/")
+      ? page.urlPattern.slice(0, -1) : page.urlPattern;
+    if (normalizedPattern === pathname) return page;
   }
 
   // Priority 3: Glob pattern match (patterns with * wildcards)
