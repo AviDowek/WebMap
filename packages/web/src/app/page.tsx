@@ -50,29 +50,29 @@ function LandingPage({ onAuth }: { onAuth: (email: string) => void }) {
   // Feature cards data
   const features = [
     {
-      icon: "\u{1F310}",
-      title: "Crawl Any Website",
-      desc: "Playwright-powered crawler visits every page, maps navigation, and discovers all interactive elements automatically.",
-    },
-    {
-      icon: "\u{1F4C4}",
-      title: "Structured Documentation",
-      desc: "Generates markdown docs with site structure, forms, buttons, workflows, and navigation patterns \u2014 optimized for AI context windows.",
-    },
-    {
-      icon: "\u{1F916}",
-      title: "Agent Benchmarking",
-      desc: "Compare 11 different CUA methods head-to-head. Measure accuracy, speed, and cost across real tasks on real websites.",
-    },
-    {
-      icon: "\u{26A1}",
-      title: "Programmatic Site APIs",
-      desc: "Auto-discover typed, self-tested functions for every site interaction. Agents call functions instead of clicking pixels.",
+      icon: "\u{1F9EA}",
+      title: "11 CUA Methods",
+      desc: "Compare vision-based, accessibility-tree, hybrid, cascade, and programmatic approaches side-by-side on real websites.",
     },
     {
       icon: "\u{1F4CA}",
-      title: "Multi-Method Analysis",
-      desc: "Composite scoring (accuracy + cost + speed) with per-site breakdowns, industry dataset support, and exportable results.",
+      title: "Multi-Method Benchmarks",
+      desc: "Run the same tasks across all methods simultaneously. Get composite scores weighing accuracy (50%), cost (30%), and speed (20%).",
+    },
+    {
+      icon: "\u{1F30D}",
+      title: "Real Websites, Real Tasks",
+      desc: "Test on any live website with custom tasks, or use industry datasets like Mind2Web, WebBench, and WebArena.",
+    },
+    {
+      icon: "\u{1F4B0}",
+      title: "Cost & Token Tracking",
+      desc: "Precise per-step cost tracking with cache-aware pricing. Know exactly what each method costs per task before you run.",
+    },
+    {
+      icon: "\u{26A1}",
+      title: "Site Doc Generation",
+      desc: "Crawl any site to produce structured markdown docs. Test whether giving agents site documentation improves task success.",
     },
     {
       icon: "\u{1F512}",
@@ -83,8 +83,8 @@ function LandingPage({ onAuth }: { onAuth: (email: string) => void }) {
 
   const howItWorks = [
     { step: "1", title: "Sign up & add your API key", desc: "Create a free account and paste your Anthropic API key. It stays in your browser." },
-    { step: "2", title: "Enter a URL", desc: "Paste any website URL. WebMap crawls it with a real browser and maps every page." },
-    { step: "3", title: "Get AI-ready docs", desc: "Copy the generated markdown into any AI assistant to give it deep knowledge of that site." },
+    { step: "2", title: "Add sites & tasks", desc: "Configure target websites and define tasks (e.g. \"search for laptops\", \"add item to cart\"), or load an industry dataset." },
+    { step: "3", title: "Run & compare", desc: "Select which CUA methods to test, hit run, and get a detailed comparison of accuracy, cost, speed, and overall score." },
   ];
 
   return (
@@ -125,27 +125,29 @@ function LandingPage({ onAuth }: { onAuth: (email: string) => void }) {
           backgroundColor: "#1a1a2e", border: "1px solid #2a2a4e",
           fontSize: 13, color: "#818cf8", marginBottom: 24,
         }}>
-          Open-source AI agent tooling
+          Open-source CUA research platform
         </div>
         <h1 style={{
           fontSize: 56, fontWeight: 800, lineHeight: 1.1,
           marginBottom: 20, letterSpacing: "-0.02em",
         }}>
-          Turn any website into{" "}
+          Benchmark{" "}
           <span style={{
             background: "linear-gradient(135deg, #3b82f6, #818cf8)",
             WebkitBackgroundClip: "text",
             WebkitTextFillColor: "transparent",
           }}>
-            AI-ready documentation
+            Computer Use Agents
           </span>
+          {" "}on real websites
         </h1>
         <p style={{
           fontSize: 20, color: "#888", lineHeight: 1.6,
-          maxWidth: 600, margin: "0 auto 40px",
+          maxWidth: 640, margin: "0 auto 40px",
         }}>
-          WebMap crawls websites, maps their structure and interactive elements, and
-          generates structured docs that AI agents can use to navigate and act.
+          Compare 11 different CUA methods head-to-head \u2014 vision, accessibility tree,
+          hybrid, cascade, programmatic \u2014 and find which approach actually works best
+          for your use case.
         </p>
         <div style={{ display: "flex", gap: 16, justifyContent: "center" }}>
           <button onClick={() => openAuth("register")} style={{
@@ -171,10 +173,10 @@ function LandingPage({ onAuth }: { onAuth: (email: string) => void }) {
       {/* Features */}
       <section id="features" style={{ maxWidth: 1100, margin: "0 auto", padding: "40px 24px 80px" }}>
         <h2 style={{ textAlign: "center", fontSize: 32, fontWeight: 700, marginBottom: 12 }}>
-          Everything you need
+          Built for CUA research
         </h2>
         <p style={{ textAlign: "center", fontSize: 16, color: "#666", marginBottom: 48 }}>
-          From simple doc generation to full agent benchmarking.
+          Everything you need to test, measure, and compare computer use agent methods.
         </p>
 
         <div style={{
@@ -239,10 +241,10 @@ function LandingPage({ onAuth }: { onAuth: (email: string) => void }) {
         padding: "80px 24px 100px",
       }}>
         <h2 style={{ fontSize: 32, fontWeight: 700, marginBottom: 12 }}>
-          Ready to get started?
+          Start benchmarking
         </h2>
         <p style={{ fontSize: 16, color: "#888", marginBottom: 32 }}>
-          Create an account in seconds. No credit card required.
+          Create an account, bring your own API key, and run your first comparison in minutes.
         </p>
         <button onClick={() => openAuth("register")} style={{
           padding: "16px 40px", fontSize: 18, fontWeight: 600,
@@ -258,7 +260,7 @@ function LandingPage({ onAuth }: { onAuth: (email: string) => void }) {
         borderTop: "1px solid #1a1a1a", padding: "24px",
         textAlign: "center", fontSize: 13, color: "#444",
       }}>
-        WebMap &mdash; Open-source AI agent tooling
+        WebMap &mdash; Open-source CUA benchmarking platform
       </footer>
 
       {/* Auth Modal */}

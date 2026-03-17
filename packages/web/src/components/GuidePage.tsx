@@ -75,8 +75,9 @@ const sections: Section[] = [
     content: (
       <>
         <p style={{ color: "#aaa", lineHeight: 1.7, marginBottom: 16 }}>
-          WebMap uses AI to crawl websites and generate structured documentation
-          that other AI agents can use. Here is how to get set up.
+          WebMap is a research platform for benchmarking Computer Use Agent (CUA)
+          methods. It lets you test how well different AI approaches perform real
+          tasks on real websites, and compare their accuracy, speed, and cost.
         </p>
 
         <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 16 }}>
@@ -98,11 +99,11 @@ const sections: Section[] = [
         <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 16 }}>
           <span style={stepNum}>2</span>
           <div>
-            <strong style={{ color: "#ededed" }}>Generate docs for your first site</strong>
+            <strong style={{ color: "#ededed" }}>Run your first benchmark</strong>
             <p style={{ color: "#888", margin: "4px 0 0", fontSize: 14 }}>
-              Go to the <span style={kbd}>Generate</span> tab, paste any URL, and click
-              Generate. WebMap will crawl the site, map its pages and interactive elements,
-              and produce a markdown document.
+              Go to the <span style={kbd}>Benchmark</span> tab, add a website, create
+              tasks (or auto-generate them), select methods to compare, and hit Run.
+              You will get a full comparison of accuracy, cost, and speed.
             </p>
           </div>
         </div>
@@ -110,11 +111,11 @@ const sections: Section[] = [
         <div style={{ display: "flex", alignItems: "flex-start" }}>
           <span style={stepNum}>3</span>
           <div>
-            <strong style={{ color: "#ededed" }}>Explore the other tabs</strong>
+            <strong style={{ color: "#ededed" }}>Explore the other tools</strong>
             <p style={{ color: "#888", margin: "4px 0 0", fontSize: 14 }}>
-              Use <span style={kbd}>Batch Test</span> to process many sites at once,{" "}
-              <span style={kbd}>Benchmark</span> to compare AI agent methods, and{" "}
-              <span style={kbd}>APIs</span> to inspect auto-generated site APIs.
+              Use <span style={kbd}>Generate</span> to create site docs (used by doc-based methods),{" "}
+              <span style={kbd}>Batch Test</span> to crawl many sites at once, and{" "}
+              <span style={kbd}>APIs</span> to inspect auto-generated programmatic site APIs.
             </p>
           </div>
         </div>
@@ -127,72 +128,13 @@ const sections: Section[] = [
     ),
   },
   {
-    id: "generate",
-    title: "Generate Tab",
-    content: (
-      <>
-        <p style={{ color: "#aaa", lineHeight: 1.7, marginBottom: 16 }}>
-          The Generate tab is the core feature. It crawls a website and produces
-          comprehensive markdown documentation that AI agents can use to navigate
-          and interact with the site.
-        </p>
-
-        <h4 style={{ color: "#ededed", marginBottom: 8 }}>What it produces</h4>
-        <ul style={{ color: "#888", lineHeight: 1.8, paddingLeft: 20, marginBottom: 16 }}>
-          <li><strong style={{ color: "#ccc" }}>Site structure</strong> - all pages, their URLs, and hierarchy</li>
-          <li><strong style={{ color: "#ccc" }}>Interactive elements</strong> - buttons, forms, dropdowns, links with their roles and labels</li>
-          <li><strong style={{ color: "#ccc" }}>Workflows</strong> - common multi-step tasks like "add to cart", "log in", etc.</li>
-          <li><strong style={{ color: "#ccc" }}>Navigation patterns</strong> - how to get between pages</li>
-        </ul>
-
-        <h4 style={{ color: "#ededed", marginBottom: 8 }}>How it works</h4>
-        <ol style={{ color: "#888", lineHeight: 1.8, paddingLeft: 20 }}>
-          <li><strong style={{ color: "#ccc" }}>Crawl</strong> - Playwright browser visits pages and builds a site map</li>
-          <li><strong style={{ color: "#ccc" }}>Analyze</strong> - Claude reads each page's accessibility tree to identify elements</li>
-          <li><strong style={{ color: "#ccc" }}>Format</strong> - Results are compiled into a single structured markdown document</li>
-        </ol>
-
-        <div style={tipBox}>
-          <strong>Tip:</strong> After generating docs, use the copy button to paste
-          them into any AI assistant's context. The docs are designed to be
-          token-efficient while maximizing the agent's understanding of the site.
-        </div>
-      </>
-    ),
-  },
-  {
-    id: "batch",
-    title: "Batch Test Tab",
-    content: (
-      <>
-        <p style={{ color: "#aaa", lineHeight: 1.7, marginBottom: 16 }}>
-          Batch Test lets you generate documentation for up to 20 websites in
-          parallel. Paste one URL per line and click Start.
-        </p>
-
-        <h4 style={{ color: "#ededed", marginBottom: 8 }}>When to use it</h4>
-        <ul style={{ color: "#888", lineHeight: 1.8, paddingLeft: 20, marginBottom: 16 }}>
-          <li>Pre-generating docs for a set of sites your agents will use</li>
-          <li>Testing WebMap's performance across different kinds of sites</li>
-          <li>Building a documentation library for your team</li>
-        </ul>
-
-        <p style={{ color: "#aaa", lineHeight: 1.7 }}>
-          Each site runs independently, so one failure won't affect the rest.
-          Results show per-site stats: pages found, interactive elements, workflows
-          detected, and token count.
-        </p>
-      </>
-    ),
-  },
-  {
     id: "benchmark",
     title: "Benchmark Tab",
     content: (
       <>
         <p style={{ color: "#aaa", lineHeight: 1.7, marginBottom: 16 }}>
-          The Benchmark tab is WebMap's research tool. It runs real AI agent tasks
-          on websites using different methods and compares their effectiveness.
+          The Benchmark tab is the core of WebMap. It runs real AI agent tasks
+          on websites using different CUA methods and compares their effectiveness.
         </p>
 
         <h4 style={{ color: "#ededed", marginBottom: 8 }}>Core concept</h4>
@@ -236,6 +178,65 @@ const sections: Section[] = [
           roughly $1-2. Large runs with many methods can be expensive. Always
           check the cost estimate before starting.
         </div>
+      </>
+    ),
+  },
+  {
+    id: "generate",
+    title: "Generate Tab",
+    content: (
+      <>
+        <p style={{ color: "#aaa", lineHeight: 1.7, marginBottom: 16 }}>
+          The Generate tab crawls a website and produces structured markdown
+          documentation. Several benchmark methods (micro-guide, full-guide,
+          first-message) use these docs to help the agent understand the site.
+        </p>
+
+        <h4 style={{ color: "#ededed", marginBottom: 8 }}>What it produces</h4>
+        <ul style={{ color: "#888", lineHeight: 1.8, paddingLeft: 20, marginBottom: 16 }}>
+          <li><strong style={{ color: "#ccc" }}>Site structure</strong> - all pages, their URLs, and hierarchy</li>
+          <li><strong style={{ color: "#ccc" }}>Interactive elements</strong> - buttons, forms, dropdowns, links with their roles and labels</li>
+          <li><strong style={{ color: "#ccc" }}>Workflows</strong> - common multi-step tasks like "add to cart", "log in", etc.</li>
+          <li><strong style={{ color: "#ccc" }}>Navigation patterns</strong> - how to get between pages</li>
+        </ul>
+
+        <h4 style={{ color: "#ededed", marginBottom: 8 }}>How it works</h4>
+        <ol style={{ color: "#888", lineHeight: 1.8, paddingLeft: 20 }}>
+          <li><strong style={{ color: "#ccc" }}>Crawl</strong> - Playwright browser visits pages and builds a site map</li>
+          <li><strong style={{ color: "#ccc" }}>Analyze</strong> - Claude reads each page's accessibility tree to identify elements</li>
+          <li><strong style={{ color: "#ccc" }}>Format</strong> - Results are compiled into a single structured markdown document</li>
+        </ol>
+
+        <div style={tipBox}>
+          <strong>Tip:</strong> Docs are cached per domain. When you run a benchmark
+          on a site that has docs, the doc-based methods will use them automatically.
+        </div>
+      </>
+    ),
+  },
+  {
+    id: "batch",
+    title: "Batch Test Tab",
+    content: (
+      <>
+        <p style={{ color: "#aaa", lineHeight: 1.7, marginBottom: 16 }}>
+          Batch Test generates documentation for up to 20 websites in parallel.
+          Paste one URL per line and click Start. Useful for pre-generating docs
+          across a set of benchmark sites.
+        </p>
+
+        <h4 style={{ color: "#ededed", marginBottom: 8 }}>When to use it</h4>
+        <ul style={{ color: "#888", lineHeight: 1.8, paddingLeft: 20, marginBottom: 16 }}>
+          <li>Pre-generating docs before running doc-based benchmark methods</li>
+          <li>Testing crawl performance across different kinds of sites</li>
+          <li>Building a documentation library for a set of target sites</li>
+        </ul>
+
+        <p style={{ color: "#aaa", lineHeight: 1.7 }}>
+          Each site runs independently, so one failure will not affect the rest.
+          Results show per-site stats: pages found, interactive elements, workflows
+          detected, and token count.
+        </p>
       </>
     ),
   },
@@ -364,7 +365,7 @@ export default function GuidePage() {
             How to Use WebMap
           </h2>
           <p style={{ color: "#666", fontSize: 15 }}>
-            Everything you need to know to get started and make the most of each feature.
+            A guide to benchmarking CUA methods and using each tool in the platform.
           </p>
         </div>
 
