@@ -24,6 +24,7 @@ import {
   type DatasetConfig,
   type DatasetSource,
 } from "@webmap/benchmark";
+import { getUserIdFromHeader } from "../auth.js";
 import { clampNumber } from "../security.js";
 import { multiMethodHistoryStore } from "../persistence.js";
 import {
@@ -35,7 +36,7 @@ import {
   benchmarkJobs,
   getMultiMethodHistory,
   MAX_HISTORY,
-  ANTHROPIC_KEY,
+  getRequestAnthropicKey,
   type BenchmarkState,
 } from "../state.js";
 
@@ -142,9 +143,12 @@ routes.post("/api/benchmark/multi", async (c) => {
     datasetConfig?: DatasetConfig;
   }>().catch(() => ({}));
 
-  if (!ANTHROPIC_KEY) {
-    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  const anthropicKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
+  if (!anthropicKey) {
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
+
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
 
   type MultiBody = {
     methods?: DocMethod[];
@@ -177,12 +181,13 @@ routes.post("/api/benchmark/multi", async (c) => {
     tasksTotal: 0,
     tasksCompleted: 0,
     multiMethod: true,
+    ownerId: userId,
   });
 
   // Run in background
   (async () => {
     const state = benchmarkJobs.get(benchId)!;
-    const client = new Anthropic({ apiKey: ANTHROPIC_KEY! });
+    const client = new Anthropic({ apiKey: anthropicKey });
 
     try {
       // Step 1: Determine sites (either from dataset or generated/configured)
@@ -260,7 +265,7 @@ routes.post("/api/benchmark/multi", async (c) => {
           for (const [domain, { url, result: crawlResult }] of crawlResults) {
             state.currentSite = domain;
             try {
-              const generator = new DocGenerator({ apiKey: ANTHROPIC_KEY!, cuaMode: true });
+              const generator = new DocGenerator({ apiKey: anthropicKey, cuaMode: true });
               const documentation = await generator.generate(crawlResult, { url, maxPages: 15, maxDepth: 2 });
               const markdown = formatAsMarkdown(documentation);
               setCache(domain, { documentation, markdown });
@@ -286,7 +291,7 @@ routes.post("/api/benchmark/multi", async (c) => {
         console.log(`[dataset:${opts.datasetConfig.source}] ${siteTasks.size} domains, ${datasetTasks.length} tasks`);
 
         const result = await runMultiMethodBenchmark(siteTasks, docsMap, {
-          apiKey: ANTHROPIC_KEY,
+          apiKey: anthropicKey,
           methods,
           runsPerTask,
           verifyResults,
@@ -305,7 +310,7 @@ routes.post("/api/benchmark/multi", async (c) => {
         state.multiResult = result;
         const mmHistory = getMultiMethodHistory();
         if (mmHistory.length >= MAX_HISTORY) mmHistory.shift();
-        mmHistory.push({ id: benchId, timestamp: result.timestamp, result });
+        mmHistory.push({ id: benchId, timestamp: result.timestamp, result, ownerId: userId });
         await multiMethodHistoryStore.save();
         return;
       }
@@ -369,7 +374,7 @@ routes.post("/api/benchmark/multi", async (c) => {
         state.currentSite = domain;
         try {
           const generator = new DocGenerator({
-            apiKey: ANTHROPIC_KEY!,
+            apiKey: anthropicKey,
             cuaMode: true,
           });
           const documentation = await generator.generate(crawlResult, {
@@ -450,7 +455,7 @@ routes.post("/api/benchmark/multi", async (c) => {
       state.tasksTotal = totalTasks;
 
       const result = await runMultiMethodBenchmark(siteTasks, docsMap, {
-        apiKey: ANTHROPIC_KEY,
+        apiKey: anthropicKey,
         methods,
         runsPerTask,
         verifyResults,
@@ -477,6 +482,7 @@ routes.post("/api/benchmark/multi", async (c) => {
         id: benchId,
         timestamp: result.timestamp,
         result,
+        ownerId: userId,
       });
       await multiMethodHistoryStore.save();
     } catch (error) {
@@ -490,7 +496,8 @@ routes.post("/api/benchmark/multi", async (c) => {
 
 // Multi-method benchmark history
 routes.get("/api/benchmark/multi/history", (c) => {
-  const mmHistory = getMultiMethodHistory();
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
+  const mmHistory = getMultiMethodHistory().filter((r) => (r as any).ownerId === userId || !(r as any).ownerId);
   return c.json({
     runs: mmHistory.map((r) => ({
       id: r.id,
@@ -503,19 +510,25 @@ routes.get("/api/benchmark/multi/history", (c) => {
 });
 
 routes.get("/api/benchmark/multi/history/:runId", (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const runId = c.req.param("runId");
   const run = getMultiMethodHistory().find((r) => r.id === runId);
-  if (!run) {
+  if (!run || ((run as any).ownerId && (run as any).ownerId !== userId)) {
     return c.json({ error: "Run not found" }, 404);
   }
   return c.json(run);
 });
 
 routes.delete("/api/benchmark/multi/history/:runId", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const runId = c.req.param("runId");
   const mmHistory = getMultiMethodHistory();
   const idx = mmHistory.findIndex((r) => r.id === runId);
   if (idx === -1) {
+    return c.json({ error: "Run not found" }, 404);
+  }
+  const entry = mmHistory[idx] as any;
+  if (entry.ownerId && entry.ownerId !== userId) {
     return c.json({ error: "Run not found" }, 404);
   }
   mmHistory.splice(idx, 1);

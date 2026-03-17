@@ -15,31 +15,36 @@ import {
   createManualTask,
   type BenchmarkTask,
 } from "@webmap/benchmark";
+import { getUserIdFromHeader } from "../auth.js";
 import { isBlockedUrl, clampNumber } from "../security.js";
 import {
   getCached,
   setCache,
   benchmarkSites,
   saveBenchmarkSites,
-  ANTHROPIC_KEY,
+  getRequestAnthropicKey,
 } from "../state.js";
 
 const routes = new Hono();
 
 // List all configured benchmark sites
 routes.get("/api/benchmark/sites", (c) => {
-  const sites = Array.from(benchmarkSites.values()).map((s) => ({
-    url: s.url,
-    domain: s.domain,
-    tasks: s.tasks,
-    hasDocumentation: s.hasDocumentation,
-    addedAt: s.addedAt,
-  }));
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
+  const sites = Array.from(benchmarkSites.values())
+    .filter((s) => (s as any).ownerId === userId || !(s as any).ownerId)
+    .map((s) => ({
+      url: s.url,
+      domain: s.domain,
+      tasks: s.tasks,
+      hasDocumentation: s.hasDocumentation,
+      addedAt: s.addedAt,
+    }));
   return c.json({ sites });
 });
 
 // Add a site to the benchmark pool
 routes.post("/api/benchmark/sites", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const body = await c.req.json<{ url: string; tasks?: BenchmarkTask[] }>();
 
   if (!body.url) {
@@ -74,6 +79,7 @@ routes.post("/api/benchmark/sites", async (c) => {
     tasks: body.tasks || [],
     hasDocumentation: hasDocs,
     addedAt: new Date().toISOString(),
+    ownerId: userId,
   };
 
   benchmarkSites.set(domain, site);
@@ -84,8 +90,13 @@ routes.post("/api/benchmark/sites", async (c) => {
 
 // Remove a site from the benchmark pool
 routes.delete("/api/benchmark/sites/:domain", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const domain = c.req.param("domain");
-  if (!benchmarkSites.has(domain)) {
+  const site = benchmarkSites.get(domain);
+  if (!site) {
+    return c.json({ error: "Site not found" }, 404);
+  }
+  if ((site as any).ownerId && (site as any).ownerId !== userId) {
     return c.json({ error: "Site not found" }, 404);
   }
   benchmarkSites.delete(domain);
@@ -95,9 +106,10 @@ routes.delete("/api/benchmark/sites/:domain", async (c) => {
 
 // Add a manual task to a site
 routes.post("/api/benchmark/sites/:domain/tasks", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const domain = c.req.param("domain");
   const site = benchmarkSites.get(domain);
-  if (!site) {
+  if (!site || ((site as any).ownerId && (site as any).ownerId !== userId)) {
     return c.json({ error: "Site not found. Add the site first." }, 404);
   }
 
@@ -126,10 +138,11 @@ routes.post("/api/benchmark/sites/:domain/tasks", async (c) => {
 
 // Delete a task from a site
 routes.delete("/api/benchmark/sites/:domain/tasks/:taskId", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const domain = c.req.param("domain");
   const taskId = c.req.param("taskId");
   const site = benchmarkSites.get(domain);
-  if (!site) {
+  if (!site || ((site as any).ownerId && (site as any).ownerId !== userId)) {
     return c.json({ error: "Site not found" }, 404);
   }
 
@@ -144,13 +157,15 @@ routes.delete("/api/benchmark/sites/:domain/tasks/:taskId", async (c) => {
 
 // AI-generate tasks for a site
 routes.post("/api/benchmark/tasks/generate", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const body = await c.req.json<{ url: string; count?: number }>();
 
   if (!body.url) {
     return c.json({ error: "url is required" }, 400);
   }
-  if (!ANTHROPIC_KEY) {
-    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  const anthropicKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
+  if (!anthropicKey) {
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
 
   let parsed: URL;
@@ -169,7 +184,7 @@ routes.post("/api/benchmark/tasks/generate", async (c) => {
     // Quick crawl to generate docs
     try {
       const crawlResult = await crawlSite({ url: parsed.href, maxDepth: 2, maxPages: 15 });
-      const generator = new DocGenerator({ apiKey: ANTHROPIC_KEY! });
+      const generator = new DocGenerator({ apiKey: anthropicKey });
       const documentation = await generator.generate(crawlResult, {
         url: parsed.href,
         maxDepth: 2,
@@ -187,7 +202,7 @@ routes.post("/api/benchmark/tasks/generate", async (c) => {
 
   // Generate tasks using AI
   try {
-    const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
+    const client = new Anthropic({ apiKey: anthropicKey });
     const tasks = await generateTasksForSite(client, parsed.href, docs.markdown, count);
 
     // Auto-add site if not already present
@@ -198,6 +213,7 @@ routes.post("/api/benchmark/tasks/generate", async (c) => {
         tasks: [],
         hasDocumentation: true,
         addedAt: new Date().toISOString(),
+        ownerId: userId,
       });
     }
 
@@ -217,17 +233,19 @@ routes.post("/api/benchmark/tasks/generate", async (c) => {
 
 // AI-generate diverse sites for benchmark
 routes.post("/api/benchmark/sites/generate", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const body = await c.req.json<{ count?: number }>().catch(() => ({}));
 
-  if (!ANTHROPIC_KEY) {
-    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  const anthropicKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
+  if (!anthropicKey) {
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
 
   const opts = body as { count?: number };
   const count = clampNumber(opts.count, 1, 20, 5);
 
   try {
-    const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
+    const client = new Anthropic({ apiKey: anthropicKey });
     const sites = await generateDiverseSites(client, count);
 
     // Auto-add generated sites to benchmark pool
@@ -240,6 +258,7 @@ routes.post("/api/benchmark/sites/generate", async (c) => {
           tasks: [],
           hasDocumentation: false,
           addedAt: new Date().toISOString(),
+          ownerId: userId,
         });
       }
     }

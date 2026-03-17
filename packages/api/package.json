@@ -7,19 +7,23 @@
   "scripts": {
     "build": "tsc",
     "dev": "node --env-file=../../.env dist/index.js",
-    "start": "node --env-file=../../.env dist/index.js",
+    "start": "node dist/index.js",
     "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@webmap/core": "*",
-    "@webmap/benchmark": "*",
-    "@webmap/api-gen": "*",
     "@anthropic-ai/sdk": "^0.39.0",
+    "@hono/node-server": "^1.14.0",
+    "@webmap/api-gen": "*",
+    "@webmap/benchmark": "*",
+    "@webmap/core": "*",
+    "bcryptjs": "^3.0.3",
     "hono": "^4.7.0",
-    "@hono/node-server": "^1.14.0"
+    "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "@types/node": "^22.0.0"
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
   }
 }

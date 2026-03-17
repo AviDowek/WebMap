@@ -28,9 +28,12 @@ import {
   MAX_PAGES_LIMIT,
   MAX_DEPTH_LIMIT,
   CRAWL_TIMEOUT_MS,
-  ANTHROPIC_KEY,
+  getRequestAnthropicKey,
   benchmarkSites,
+  getUserDocs,
+  deleteUserCache,
 } from "../state.js";
+import { getUserIdFromHeader } from "../auth.js";
 
 const routes = new Hono();
 
@@ -67,9 +70,10 @@ routes.post("/api/crawl", async (c) => {
   }
 
   const domain = new URL(body.url).hostname;
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
 
   // Check cache first
-  const cached = getCached(domain);
+  const cached = getCached(domain, userId);
   if (cached) {
     return c.json({
       status: "cached",
@@ -88,8 +92,9 @@ routes.post("/api/crawl", async (c) => {
     return c.json({ error: "Too many concurrent crawls. Try again later." }, 503);
   }
 
-  if (!ANTHROPIC_KEY) {
-    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  const anthropicKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
+  if (!anthropicKey) {
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
 
   // Clamp inputs
@@ -97,7 +102,7 @@ routes.post("/api/crawl", async (c) => {
   const maxPages = clampNumber(body.maxPages, 1, MAX_PAGES_LIMIT, 50);
 
   const jobId = randomUUID();
-  jobStatus.set(jobId, { status: "queued" });
+  jobStatus.set(jobId, { status: "queued", ownerId: userId });
   activeCrawls.add(domain);
 
   // Run pipeline in background with phase tracking and timeout
@@ -105,13 +110,13 @@ routes.post("/api/crawl", async (c) => {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      jobStatus.set(jobId, { status: "error", error: "Crawl timed out" });
+      jobStatus.set(jobId, { status: "error", error: "Crawl timed out", ownerId: userId });
       activeCrawls.delete(domain);
     }, CRAWL_TIMEOUT_MS);
 
     try {
       // Phase 1: Crawl
-      jobStatus.set(jobId, { status: "crawling" });
+      jobStatus.set(jobId, { status: "crawling", ownerId: userId });
       const crawlResult = await crawlSite({
         url: body.url,
         maxDepth,
@@ -122,11 +127,12 @@ routes.post("/api/crawl", async (c) => {
       jobStatus.set(jobId, {
         status: "analyzing",
         pagesFound: crawlResult.pages.length,
+        ownerId: userId,
       });
 
       // Phase 2: LLM enrichment
       const generator = new DocGenerator({
-        apiKey: ANTHROPIC_KEY!,
+        apiKey: anthropicKey,
       });
       const documentation = await generator.generate(crawlResult, {
         url: body.url,
@@ -139,15 +145,17 @@ routes.post("/api/crawl", async (c) => {
       jobStatus.set(jobId, {
         status: "formatting",
         pagesFound: crawlResult.pages.length,
+        ownerId: userId,
       });
       const markdown = formatAsMarkdown(documentation);
 
       const result: WebMapResult = { documentation, markdown };
-      setCache(domain, result);
+      setCache(domain, result, userId);
       jobStatus.set(jobId, {
         status: "done",
         result,
         pagesFound: crawlResult.pages.length,
+        ownerId: userId,
       });
     } catch (error) {
       if (!timedOut) {
@@ -172,9 +180,10 @@ routes.get("/api/status/:jobId", (c) => {
     return c.json({ error: "Rate limit exceeded" }, 429);
   }
 
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const jobId = c.req.param("jobId");
   const job = jobStatus.get(jobId);
-  if (!job) {
+  if (!job || (job.ownerId && job.ownerId !== userId)) {
     return c.json({ error: "Job not found" }, 404);
   }
 
@@ -193,29 +202,22 @@ routes.get("/api/status/:jobId", (c) => {
   });
 });
 
-// List all cached docs (for UI management)
+// List all cached docs (for UI management) — scoped to user
 routes.get("/api/docs", (c) => {
-  const docs: Array<{
-    domain: string;
-    totalPages: number;
-    totalElements: number;
-    totalWorkflows: number;
-    tokensUsed: number;
-    crawledAt: string;
-  }> = [];
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
+  const userDocs = getUserDocs(userId);
 
-  for (const [domain, entry] of docsCache.entries()) {
-    if (Date.now() > entry.expiresAt) continue;
-    const meta = entry.result.documentation.metadata;
-    docs.push({
+  const docs = userDocs.map(({ domain, result }) => {
+    const meta = result.documentation.metadata;
+    return {
       domain,
       totalPages: meta.totalPages,
       totalElements: meta.totalElements,
       totalWorkflows: meta.totalWorkflows,
       tokensUsed: meta.tokensUsed,
-      crawledAt: entry.result.documentation.crawledAt,
-    });
-  }
+      crawledAt: result.documentation.crawledAt,
+    };
+  });
 
   return c.json({ docs });
 });
@@ -227,8 +229,9 @@ routes.get("/api/docs/:domain", (c) => {
     return c.json({ error: "Rate limit exceeded" }, 429);
   }
 
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const domain = c.req.param("domain");
-  const cached = getCached(domain);
+  const cached = getCached(domain, userId);
 
   if (!cached) {
     return c.json({ error: "No documentation found. Start a crawl first." }, 404);
@@ -244,9 +247,10 @@ routes.get("/api/docs/:domain", (c) => {
 
 // Get docs for a specific page path
 routes.get("/api/docs/:domain/:path{.*}", (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const domain = c.req.param("domain");
   const path = "/" + (c.req.param("path") || "");
-  const cached = getCached(domain);
+  const cached = getCached(domain, userId);
 
   if (!cached) {
     return c.json({ error: "No documentation found." }, 404);
@@ -266,21 +270,22 @@ routes.get("/api/docs/:domain/:path{.*}", (c) => {
 
 // Delete cached docs for a domain
 routes.delete("/api/docs/:domain", (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const domain = c.req.param("domain");
-  if (!docsCache.has(domain)) {
+  if (!deleteUserCache(domain, userId)) {
     return c.json({ error: "No cached docs for this domain" }, 404);
   }
-  docsCache.delete(domain);
-  saveDocsCache();
   return c.json({ ok: true });
 });
 
 // Regenerate docs for a domain (delete cache + re-crawl)
 routes.post("/api/docs/:domain/regenerate", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const domain = c.req.param("domain");
 
-  if (!ANTHROPIC_KEY) {
-    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  const anthropicKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
+  if (!anthropicKey) {
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
 
   // Find the URL from cache or benchmark sites
@@ -302,8 +307,7 @@ routes.post("/api/docs/:domain/regenerate", async (c) => {
   }
 
   // Delete old cache
-  docsCache.delete(domain);
-  saveDocsCache();
+  deleteUserCache(domain, userId);
 
   // Start a new crawl job
   const jobId = randomUUID();
@@ -324,15 +328,15 @@ routes.post("/api/docs/:domain/regenerate", async (c) => {
       if (timedOut) return;
 
       jobStatus.set(jobId, { status: "analyzing", pagesFound: crawlResult.pages.length });
-      const generator = new DocGenerator({ apiKey: ANTHROPIC_KEY! });
+      const generator = new DocGenerator({ apiKey: anthropicKey });
       const documentation = await generator.generate(crawlResult, { url: siteUrl!, maxDepth: 3, maxPages: 50 });
       if (timedOut) return;
 
       jobStatus.set(jobId, { status: "formatting", pagesFound: crawlResult.pages.length });
       const markdown = formatAsMarkdown(documentation);
       const result: WebMapResult = { documentation, markdown };
-      setCache(domain, result);
-      jobStatus.set(jobId, { status: "done", result, pagesFound: crawlResult.pages.length });
+      setCache(domain, result, userId);
+      jobStatus.set(jobId, { status: "done", result, pagesFound: crawlResult.pages.length, ownerId: userId });
     } catch (error) {
       if (!timedOut) {
         jobStatus.set(jobId, { status: "error", error: error instanceof Error ? error.message : String(error) });

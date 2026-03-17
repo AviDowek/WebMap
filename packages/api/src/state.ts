@@ -76,6 +76,7 @@ export interface JobState {
   result?: WebMapResult;
   error?: string;
   pagesFound?: number;
+  ownerId?: string;
 }
 
 export const jobStatus = new Map<string, JobState>();
@@ -92,24 +93,36 @@ export function setJobStatus(jobId: string, state: JobState): void {
 export const activeCrawls = new Set<string>();
 export const MAX_CONCURRENT_CRAWLS = 5;
 
-export function getCached(domain: string): WebMapResult | null {
-  const entry = docsCache.get(domain);
-  if (!entry) return null;
+/** Scope key: "userId:domain" for per-user isolation */
+function scopeKey(userId: string, domain: string): string {
+  return `${userId}:${domain}`;
+}
+
+export function getCached(domain: string, userId?: string): WebMapResult | null {
+  // Try user-scoped key first, fall back to global (for backward compat)
+  const key = userId ? scopeKey(userId, domain) : domain;
+  const entry = docsCache.get(key);
+  if (!entry) {
+    // Fall back to unscoped key for pre-existing cache entries
+    if (userId) return getCached(domain);
+    return null;
+  }
   if (Date.now() > entry.expiresAt) {
-    docsCache.delete(domain);
+    docsCache.delete(key);
     saveDocsCache();
     return null;
   }
   return entry.result;
 }
 
-export function setCache(domain: string, result: WebMapResult): void {
+export function setCache(domain: string, result: WebMapResult, userId?: string): void {
+  const key = userId ? scopeKey(userId, domain) : domain;
   // Evict oldest if at capacity
   if (docsCache.size >= MAX_CACHE_SIZE) {
     const firstKey = docsCache.keys().next().value;
     if (firstKey) docsCache.delete(firstKey);
   }
-  docsCache.set(domain, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+  docsCache.set(key, { result, expiresAt: Date.now() + CACHE_TTL_MS });
   // Persist to disk (fire-and-forget)
   saveDocsCache();
 }
@@ -144,6 +157,17 @@ export const CRAWL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 export const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 export const API_KEY = process.env.WEBMAP_API_KEY;
 
+/**
+ * Get the Anthropic API key for a request.
+ * Priority: x-anthropic-key header (BYOK) > server env var.
+ * Returns undefined if neither is set.
+ */
+export function getRequestAnthropicKey(headerValue: string | undefined): string | undefined {
+  // BYOK: user-provided key takes priority
+  if (headerValue && headerValue.startsWith("sk-")) return headerValue;
+  return ANTHROPIC_KEY;
+}
+
 export function requireAuth(authHeader: string | undefined): boolean {
   return checkAuth(authHeader, API_KEY);
 }
@@ -167,6 +191,7 @@ export interface BatchState {
   status: "running" | "done";
   sites: BatchSiteResult[];
   startedAt: string;
+  ownerId?: string;
 }
 
 export const batchJobs = new Map<string, BatchState>();
@@ -187,6 +212,7 @@ export interface BenchmarkSiteConfig {
   tasks: BenchmarkTask[];
   hasDocumentation: boolean;
   addedAt: string;
+  ownerId?: string;
 }
 
 // In-memory Map backed by persisted store
@@ -224,6 +250,8 @@ export interface BenchmarkState {
   currentSite?: string;
   /** Current method being tested */
   currentMethod?: string;
+  /** Owner user ID */
+  ownerId?: string;
 }
 
 export const benchmarkJobs = new Map<string, BenchmarkState>();
@@ -243,12 +271,14 @@ export interface SavedBenchmarkRun {
   timestamp: string;
   tasksTotal: number;
   result: BenchmarkResult;
+  ownerId?: string;
 }
 
 export interface MultiMethodSavedRun {
   id: string;
   timestamp: string;
   result: MultiMethodBenchmarkResult;
+  ownerId?: string;
 }
 
 export const MAX_HISTORY = 20;
@@ -299,4 +329,60 @@ export function loadActiveJobsFromStore(): void {
 
   // Start periodic cleanup of old completed jobs
   startCleanupTimer();
+}
+
+// ─── User-Scoped Queries ─────────────────────────────────────────────────────
+
+/** Get benchmark sites belonging to a specific user */
+export function getUserBenchmarkSites(userId: string): Map<string, BenchmarkSiteConfig> {
+  const result = new Map<string, BenchmarkSiteConfig>();
+  for (const [k, v] of benchmarkSites) {
+    if (v.ownerId === userId || !v.ownerId) result.set(k, v);
+  }
+  return result;
+}
+
+/** Get benchmark history for a specific user */
+export function getUserBenchmarkHistory(userId: string): SavedBenchmarkRun[] {
+  return (benchmarkHistoryStore.data as SavedBenchmarkRun[]).filter(
+    (r) => r.ownerId === userId || !r.ownerId
+  );
+}
+
+/** Get multi-method history for a specific user */
+export function getUserMultiMethodHistory(userId: string): MultiMethodSavedRun[] {
+  return (multiMethodHistoryStore.data as MultiMethodSavedRun[]).filter(
+    (r) => r.ownerId === userId || !r.ownerId
+  );
+}
+
+/** Get docs belonging to a specific user (user-scoped or unscoped legacy) */
+export function getUserDocs(userId: string): Array<{ domain: string; result: WebMapResult; expiresAt: number }> {
+  const results: Array<{ domain: string; result: WebMapResult; expiresAt: number }> = [];
+  const prefix = `${userId}:`;
+  const now = Date.now();
+  for (const [key, entry] of docsCache) {
+    if (now > entry.expiresAt) continue;
+    if (key.startsWith(prefix)) {
+      results.push({ domain: key.slice(prefix.length), ...entry });
+    }
+  }
+  return results;
+}
+
+/** Delete a user-scoped cache entry */
+export function deleteUserCache(domain: string, userId: string): boolean {
+  const key = `${userId}:${domain}`;
+  if (docsCache.has(key)) {
+    docsCache.delete(key);
+    saveDocsCache();
+    return true;
+  }
+  // Fall back to unscoped
+  if (docsCache.has(domain)) {
+    docsCache.delete(domain);
+    saveDocsCache();
+    return true;
+  }
+  return false;
 }

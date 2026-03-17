@@ -18,6 +18,7 @@ import {
   ALL_DOC_METHODS,
   METHOD_AVG_TOKENS,
 } from "../lib/constants";
+import { apiHeaders } from "../lib/api";
 import { btnStyle, primaryBtn, inputStyle } from "../lib/styles";
 import { computeEstimatedCost, formatUsd } from "../lib/utils";
 import MultiMethodResults from "./MultiMethodResults";
@@ -78,7 +79,7 @@ export default function BenchmarkTab() {
     loadSites();
     loadHistory();
     loadMultiHistory();
-    fetch(`${API_BASE}/api/benchmark/datasets`)
+    fetch(`${API_BASE}/api/benchmark/datasets`, { headers: apiHeaders() })
       .then((r) => r.ok ? r.json() : null)
       .then((d) => { if (d?.datasets) setDatasetInfo(d.datasets); })
       .catch(() => {});
@@ -87,7 +88,7 @@ export default function BenchmarkTab() {
     const savedMulti = localStorage.getItem("activeBenchmarkMulti") === "true";
     if (savedBenchId) {
       // Check if it's still running
-      fetch(`${API_BASE}/api/benchmark/status/${savedBenchId}`)
+      fetch(`${API_BASE}/api/benchmark/status/${savedBenchId}`, { headers: apiHeaders() })
         .then((res) => res.ok ? res.json() : null)
         .then((d) => {
           if (d && d.status !== "done" && d.status !== "error") {
@@ -110,7 +111,7 @@ export default function BenchmarkTab() {
 
   async function loadSites() {
     try {
-      const res = await fetch(`${API_BASE}/api/benchmark/sites`);
+      const res = await fetch(`${API_BASE}/api/benchmark/sites`, { headers: apiHeaders() });
       if (res.ok) {
         const data = await res.json();
         setSites(data.sites || []);
@@ -120,7 +121,7 @@ export default function BenchmarkTab() {
 
   async function loadHistory() {
     try {
-      const res = await fetch(`${API_BASE}/api/benchmark/history`);
+      const res = await fetch(`${API_BASE}/api/benchmark/history`, { headers: apiHeaders() });
       if (res.ok) {
         const data = await res.json();
         setHistory(data.runs || []);
@@ -130,7 +131,7 @@ export default function BenchmarkTab() {
 
   async function loadMultiHistory() {
     try {
-      const res = await fetch(`${API_BASE}/api/benchmark/multi/history`);
+      const res = await fetch(`${API_BASE}/api/benchmark/multi/history`, { headers: apiHeaders() });
       if (res.ok) {
         const data = await res.json();
         setMultiHistory(data.runs || []);
@@ -141,7 +142,7 @@ export default function BenchmarkTab() {
   async function deleteRun(runId: string, multi: boolean) {
     const base = multi ? "multi/history" : "history";
     try {
-      await fetch(`${API_BASE}/api/benchmark/${base}/${runId}`, { method: "DELETE" });
+      await fetch(`${API_BASE}/api/benchmark/${base}/${runId}`, { method: "DELETE", headers: apiHeaders() });
       if (multi) {
         setMultiHistory((prev) => prev.filter((r) => r.id !== runId));
       } else {
@@ -167,7 +168,7 @@ export default function BenchmarkTab() {
     setExpandedMultiResult(null);
     const base = multi ? "multi/history" : "history";
     try {
-      const res = await fetch(`${API_BASE}/api/benchmark/${base}/${runId}`);
+      const res = await fetch(`${API_BASE}/api/benchmark/${base}/${runId}`, { headers: apiHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (multi) {
@@ -185,7 +186,7 @@ export default function BenchmarkTab() {
     try {
       const res = await fetch(`${API_BASE}/api/benchmark/sites`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify({ url: newSiteUrl }),
       });
       if (res.ok) {
@@ -204,7 +205,7 @@ export default function BenchmarkTab() {
 
   async function removeSite(domain: string) {
     try {
-      await fetch(`${API_BASE}/api/benchmark/sites/${domain}`, { method: "DELETE" });
+      await fetch(`${API_BASE}/api/benchmark/sites/${domain}`, { method: "DELETE", headers: apiHeaders() });
       await loadSites();
     } catch { /* ignore */ }
   }
@@ -214,7 +215,7 @@ export default function BenchmarkTab() {
     try {
       const res = await fetch(`${API_BASE}/api/benchmark/sites/${domain}/tasks`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify(taskForm),
       });
       if (res.ok) {
@@ -227,7 +228,7 @@ export default function BenchmarkTab() {
 
   async function removeTask(domain: string, taskId: string) {
     try {
-      await fetch(`${API_BASE}/api/benchmark/sites/${domain}/tasks/${taskId}`, { method: "DELETE" });
+      await fetch(`${API_BASE}/api/benchmark/sites/${domain}/tasks/${taskId}`, { method: "DELETE", headers: apiHeaders() });
       await loadSites();
     } catch { /* ignore */ }
   }
@@ -237,7 +238,7 @@ export default function BenchmarkTab() {
     try {
       const res = await fetch(`${API_BASE}/api/benchmark/tasks/generate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify({ url, count: 3 }),
       });
       if (res.ok) {
@@ -258,7 +259,7 @@ export default function BenchmarkTab() {
     try {
       const res = await fetch(`${API_BASE}/api/benchmark/sites/generate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify({ count: siteCount }),
       });
       if (res.ok) {
@@ -291,7 +292,7 @@ export default function BenchmarkTab() {
     try {
       const res = await fetch(`${API_BASE}/api/benchmark`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify(
           useConfigured ? { useConfiguredSites: true } : { useSampleTasks: true }
         ),
@@ -331,7 +332,7 @@ export default function BenchmarkTab() {
       const selectedDataset = datasetInfo.find((d) => d.id === datasetId);
       const res = await fetch(`${API_BASE}/api/benchmark/multi`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify({
           methods: selectedMethods,
           generateSites: isDataset ? false : generateNewSites,
@@ -394,7 +395,7 @@ export default function BenchmarkTab() {
       }
 
       try {
-        const statusRes = await fetch(`${API_BASE}/api/benchmark/status/${benchId}`);
+        const statusRes = await fetch(`${API_BASE}/api/benchmark/status/${benchId}`, { headers: apiHeaders() });
         if (!statusRes.ok) return;
 
         const d = await statusRes.json();

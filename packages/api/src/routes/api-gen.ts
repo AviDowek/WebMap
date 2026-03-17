@@ -22,7 +22,8 @@ import {
   runSelfTest,
   applyTestResults,
 } from "@webmap/api-gen";
-import { ANTHROPIC_KEY } from "../state.js";
+import { getRequestAnthropicKey } from "../state.js";
+import { getUserIdFromHeader } from "../auth.js";
 
 const routes = new Hono();
 
@@ -32,6 +33,7 @@ interface DiscoveryJob {
   domain: string;
   url: string;
   status: "running" | "done" | "error";
+  ownerId?: string;
   startedAt: string;
   completedAt?: string;
   error?: string;
@@ -43,6 +45,7 @@ const activeJobs = new Map<string, DiscoveryJob>();
 // ─── List cached domains ──────────────────────────────────────────
 
 routes.get("/api/api-gen/domains", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   try {
     const domains = await listCachedDomains();
     return c.json({ domains });
@@ -54,6 +57,7 @@ routes.get("/api/api-gen/domains", async (c) => {
 // ─── Get full DomainAPI ───────────────────────────────────────────
 
 routes.get("/api/api-gen/:domain", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const domain = c.req.param("domain");
   try {
     const api = await loadDomainAPIFromCache(domain) ?? await loadDomainAPIStale(domain);
@@ -74,10 +78,12 @@ routes.post("/api/api-gen/discover", async (c) => {
     return c.json({ error: "url is required" }, 400);
   }
 
-  const apiKey = ANTHROPIC_KEY;
+  const apiKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
   if (!apiKey) {
-    return c.json({ error: "ANTHROPIC_API_KEY not configured" }, 500);
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
+
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
 
   let domain: string;
   try {
@@ -92,6 +98,7 @@ routes.post("/api/api-gen/discover", async (c) => {
     domain,
     url: body.url,
     status: "running",
+    ownerId: userId,
     startedAt: new Date().toISOString(),
   };
   activeJobs.set(jobId, job);
@@ -129,8 +136,9 @@ routes.post("/api/api-gen/discover", async (c) => {
 
 routes.get("/api/api-gen/status/:jobId", (c) => {
   const jobId = c.req.param("jobId");
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const job = activeJobs.get(jobId);
-  if (!job) {
+  if (!job || (job.ownerId && job.ownerId !== userId)) {
     return c.json({ error: "Job not found" }, 404);
   }
   return c.json(job);
@@ -140,10 +148,12 @@ routes.get("/api/api-gen/status/:jobId", (c) => {
 
 routes.post("/api/api-gen/:domain/test", async (c) => {
   const domain = c.req.param("domain");
-  const apiKey = ANTHROPIC_KEY;
+  const apiKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
   if (!apiKey) {
-    return c.json({ error: "ANTHROPIC_API_KEY not configured" }, 500);
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
+
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
 
   const api = await loadDomainAPIFromCache(domain) ?? await loadDomainAPIStale(domain);
   if (!api) {
@@ -156,6 +166,7 @@ routes.post("/api/api-gen/:domain/test", async (c) => {
     domain,
     url: api.rootUrl,
     status: "running",
+    ownerId: userId,
     startedAt: new Date().toISOString(),
   };
   activeJobs.set(jobId, job);

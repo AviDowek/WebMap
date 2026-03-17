@@ -4,8 +4,12 @@ dist
 *.tsbuildinfo
 .env
 .env.local
+.env.*.local
 generated
 .next
 storage
 benchmark-results
+packages/api/data
 .git
+.claude
+*.log

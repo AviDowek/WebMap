@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, type FormEvent } from "react";
 import type { BatchStatus } from "../lib/types";
 import { API_BASE, MAX_POLL_ATTEMPTS } from "../lib/constants";
+import { apiHeaders } from "../lib/api";
 import { btnStyle, primaryBtn, statusColors } from "../lib/styles";
 
 function ErrorBox({ error }: { error?: string }) {
@@ -59,7 +60,7 @@ export default function BatchTab() {
     try {
       const res = await fetch(`${API_BASE}/api/batch`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify({ urls: urlList }),
       });
 
@@ -84,7 +85,7 @@ export default function BatchTab() {
         }
 
         try {
-          const statusRes = await fetch(`${API_BASE}/api/batch/status/${batchId}`);
+          const statusRes = await fetch(`${API_BASE}/api/batch/status/${batchId}`, { headers: apiHeaders() });
           if (!statusRes.ok) return;
 
           const statusData = await statusRes.json();

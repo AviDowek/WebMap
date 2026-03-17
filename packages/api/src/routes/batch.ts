@@ -11,12 +11,13 @@ import {
   type WebMapResult,
 } from "@webmap/core";
 import { isBlockedUrl } from "../security.js";
+import { getUserIdFromHeader } from "../auth.js";
 import {
   runWithConcurrency,
   getCached,
   setCache,
   batchJobs,
-  ANTHROPIC_KEY,
+  getRequestAnthropicKey,
   type BatchSiteResult,
 } from "../state.js";
 
@@ -33,9 +34,12 @@ routes.post("/api/batch", async (c) => {
     return c.json({ error: "Maximum 20 URLs per batch" }, 400);
   }
 
-  if (!ANTHROPIC_KEY) {
-    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  const anthropicKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
+  if (!anthropicKey) {
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
+
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
 
   // Validate and filter URLs
   const validUrls: string[] = [];
@@ -67,6 +71,7 @@ routes.post("/api/batch", async (c) => {
     status: "running",
     sites,
     startedAt: new Date().toISOString(),
+    ownerId: userId,
   });
 
   // Process concurrently in background (up to 2 at a time)
@@ -99,7 +104,7 @@ routes.post("/api/batch", async (c) => {
         site.status = "analyzing";
         site.pagesFound = crawlResult.pages.length;
 
-        const generator = new DocGenerator({ apiKey: ANTHROPIC_KEY! });
+        const generator = new DocGenerator({ apiKey: anthropicKey });
         const documentation = await generator.generate(crawlResult, {
           url: site.url,
           maxDepth: 2,
@@ -107,7 +112,7 @@ routes.post("/api/batch", async (c) => {
         });
         const markdown = formatAsMarkdown(documentation);
         const result: WebMapResult = { documentation, markdown };
-        setCache(site.domain, result);
+        setCache(site.domain, result, userId);
 
         site.status = "done";
         site.elementsFound = documentation.metadata.totalElements;
@@ -129,8 +134,9 @@ routes.post("/api/batch", async (c) => {
 
 routes.get("/api/batch/status/:batchId", (c) => {
   const batchId = c.req.param("batchId");
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const batch = batchJobs.get(batchId);
-  if (!batch) {
+  if (!batch || (batch.ownerId && batch.ownerId !== userId)) {
     return c.json({ error: "Batch not found" }, 404);
   }
 

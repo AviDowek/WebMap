@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { API_BASE } from "../lib/constants";
+import { apiHeaders } from "../lib/api";
 import { cardStyle, sectionStyle, btnStyle, primaryBtn } from "../lib/styles";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -96,14 +97,7 @@ function tierColor(tier: string): string {
   }
 }
 
-const apiHeaders = (): Record<string, string> => {
-  const h: Record<string, string> = { "Content-Type": "application/json" };
-  if (typeof window !== "undefined") {
-    const key = (window as unknown as Record<string, string>).__WEBMAP_API_KEY;
-    if (key) h["Authorization"] = `Bearer ${key}`;
-  }
-  return h;
-};
+// apiHeaders imported from ../lib/api
 
 // ─── Component ───────────────────────────────────────────────────
 

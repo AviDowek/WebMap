@@ -16,6 +16,7 @@ import {
   sampleTasks,
   type BenchmarkTask,
 } from "@webmap/benchmark";
+import { getUserIdFromHeader } from "../auth.js";
 import { benchmarkHistoryStore } from "../persistence.js";
 import {
   runWithConcurrency,
@@ -25,7 +26,7 @@ import {
   getBenchmarkHistory,
   getMultiMethodHistory,
   MAX_HISTORY,
-  ANTHROPIC_KEY,
+  getRequestAnthropicKey,
   type BenchmarkState,
 } from "../state.js";
 
@@ -39,9 +40,12 @@ routes.post("/api/benchmark", async (c) => {
     useConfiguredSites?: boolean;
   }>().catch(() => ({}));
 
-  if (!ANTHROPIC_KEY) {
-    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  const anthropicKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
+  if (!anthropicKey) {
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
+
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
 
   const opts = body as {
     tasks?: BenchmarkTask[];
@@ -78,6 +82,7 @@ routes.post("/api/benchmark", async (c) => {
     status: "generating-docs",
     tasksTotal: tasks.length,
     tasksCompleted: 0,
+    ownerId: userId,
   });
 
   // Run benchmark in background
@@ -103,7 +108,7 @@ routes.post("/api/benchmark", async (c) => {
       // Step 1b: Generate docs sequentially (avoid Claude API rate limits)
       for (const [domain, { url, result: crawlResult }] of crawlResults) {
         try {
-          const generator = new DocGenerator({ apiKey: ANTHROPIC_KEY!, cuaMode: true });
+          const generator = new DocGenerator({ apiKey: anthropicKey, cuaMode: true });
           const documentation = await generator.generate(crawlResult, { url, maxPages: 15, maxDepth: 2 });
           const markdown = formatAsMarkdown(documentation);
           setCache(domain, { documentation, markdown });
@@ -116,7 +121,7 @@ routes.post("/api/benchmark", async (c) => {
       // Step 2: Run CUA benchmark
       state.status = "running-baseline";
       const result = await runBenchmark(tasks, docsMap, {
-        apiKey: ANTHROPIC_KEY,
+        apiKey: anthropicKey,
         onPhaseChange: (phase: string, completed: number) => {
           if (phase === "baseline") {
             state.status = "running-baseline";
@@ -140,6 +145,7 @@ routes.post("/api/benchmark", async (c) => {
         timestamp: result.timestamp,
         tasksTotal: tasks.length,
         result,
+        ownerId: userId,
       });
       await benchmarkHistoryStore.save();
     } catch (error) {
@@ -153,9 +159,10 @@ routes.post("/api/benchmark", async (c) => {
 
 // Check benchmark status
 routes.get("/api/benchmark/status/:benchId", (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const benchId = c.req.param("benchId");
   const state = benchmarkJobs.get(benchId);
-  if (!state) {
+  if (!state || (state.ownerId && state.ownerId !== userId)) {
     // Check if it's a completed run that was persisted before a restart
     const savedSingle = getBenchmarkHistory().find((r) => r.id === benchId);
     if (savedSingle) {
@@ -194,7 +201,8 @@ routes.get("/api/benchmark/status/:benchId", (c) => {
 
 // List saved benchmark runs
 routes.get("/api/benchmark/history", (c) => {
-  const history = getBenchmarkHistory();
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
+  const history = getBenchmarkHistory().filter((r) => (r as any).ownerId === userId || !(r as any).ownerId);
   return c.json({
     runs: history.map((r) => ({
       id: r.id,
@@ -209,9 +217,10 @@ routes.get("/api/benchmark/history", (c) => {
 
 // Get a specific saved run
 routes.get("/api/benchmark/history/:runId", (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const runId = c.req.param("runId");
   const run = getBenchmarkHistory().find((r) => r.id === runId);
-  if (!run) {
+  if (!run || ((run as any).ownerId && (run as any).ownerId !== userId)) {
     return c.json({ error: "Run not found" }, 404);
   }
   return c.json(run);
@@ -219,10 +228,15 @@ routes.get("/api/benchmark/history/:runId", (c) => {
 
 // Delete a saved run
 routes.delete("/api/benchmark/history/:runId", async (c) => {
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
   const runId = c.req.param("runId");
   const history = getBenchmarkHistory();
   const idx = history.findIndex((r) => r.id === runId);
   if (idx === -1) {
+    return c.json({ error: "Run not found" }, 404);
+  }
+  const entry = history[idx] as any;
+  if (entry.ownerId && entry.ownerId !== userId) {
     return c.json({ error: "Run not found" }, 404);
   }
   history.splice(idx, 1);

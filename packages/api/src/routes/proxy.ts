@@ -17,8 +17,9 @@ import {
   checkRateLimit,
   getCached,
   setCache,
-  ANTHROPIC_KEY,
+  getRequestAnthropicKey,
 } from "../state.js";
+import { getUserIdFromHeader } from "../auth.js";
 
 const routes = new Hono();
 
@@ -46,15 +47,17 @@ routes.get("/http*", async (c) => {
   }
 
   const domain = new URL(targetUrl).hostname;
+  const userId = getUserIdFromHeader(c.req.header("Authorization"))!;
 
   // Return cached if available
-  const cached = getCached(domain);
+  const cached = getCached(domain, userId);
   if (cached) {
     return c.text(cached.markdown);
   }
 
-  if (!ANTHROPIC_KEY) {
-    return c.json({ error: "Server misconfigured: ANTHROPIC_API_KEY not set" }, 500);
+  const anthropicKey = getRequestAnthropicKey(c.req.header("x-anthropic-key"));
+  if (!anthropicKey) {
+    return c.json({ error: "Anthropic API key required. Provide via x-anthropic-key header or set ANTHROPIC_API_KEY on server." }, 400);
   }
 
   // Crawl on-demand with timeout
@@ -65,7 +68,7 @@ routes.get("/http*", async (c) => {
       maxPages: 20,
     });
     const generator = new DocGenerator({
-      apiKey: ANTHROPIC_KEY!,
+      apiKey: anthropicKey,
     });
     const documentation = await generator.generate(crawlResult, {
       url: targetUrl,
@@ -74,7 +77,7 @@ routes.get("/http*", async (c) => {
     });
     const markdown = formatAsMarkdown(documentation);
     const result: WebMapResult = { documentation, markdown };
-    setCache(domain, result);
+    setCache(domain, result, userId);
     return c.text(result.markdown);
   } catch (error) {
     return c.json(

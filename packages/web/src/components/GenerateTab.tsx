@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, type FormEvent } from "react";
 import type { CrawlStatus, CachedDoc } from "../lib/types";
 import { API_BASE, PHASE_LABELS, MAX_POLL_ATTEMPTS } from "../lib/constants";
+import { apiHeaders } from "../lib/api";
 import { btnStyle, primaryBtn, inputStyle } from "../lib/styles";
 
 // ─── Shared Sub-Components ───────────────────────────────────────────
@@ -84,7 +85,7 @@ export default function GenerateTab() {
 
   async function loadCachedDocs() {
     try {
-      const res = await fetch(`${API_BASE}/api/docs`);
+      const res = await fetch(`${API_BASE}/api/docs`, { headers: apiHeaders() });
       if (res.ok) {
         const data = await res.json();
         setCachedDocs(data.docs || []);
@@ -96,7 +97,7 @@ export default function GenerateTab() {
 
   async function deleteDoc(domain: string) {
     try {
-      await fetch(`${API_BASE}/api/docs/${domain}`, { method: "DELETE" });
+      await fetch(`${API_BASE}/api/docs/${domain}`, { method: "DELETE", headers: apiHeaders() });
       setCachedDocs((prev) => prev.filter((d) => d.domain !== domain));
     } catch {
       // ignore
@@ -106,7 +107,7 @@ export default function GenerateTab() {
   async function regenerateDoc(domain: string) {
     setRegenerating(domain);
     try {
-      const res = await fetch(`${API_BASE}/api/docs/${domain}/regenerate`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/docs/${domain}/regenerate`, { method: "POST", headers: apiHeaders() });
       if (res.ok) {
         await loadCachedDocs();
       } else {
@@ -127,7 +128,7 @@ export default function GenerateTab() {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/api/docs/${domain}`);
+      const res = await fetch(`${API_BASE}/api/docs/${domain}`, { headers: apiHeaders() });
       if (res.ok) {
         const markdown = await res.text();
         setViewingDoc(domain);
@@ -160,7 +161,7 @@ export default function GenerateTab() {
     try {
       const res = await fetch(`${API_BASE}/api/crawl`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify({ url: targetUrl }),
       });
 
@@ -191,7 +192,7 @@ export default function GenerateTab() {
         }
 
         try {
-          const statusRes = await fetch(`${API_BASE}/api/status/${jobId}`);
+          const statusRes = await fetch(`${API_BASE}/api/status/${jobId}`, { headers: apiHeaders() });
           if (!statusRes.ok) return;
 
           const statusData = await statusRes.json();
@@ -203,7 +204,7 @@ export default function GenerateTab() {
             let markdown = statusData.markdown;
             if (!markdown) {
               const domain = new URL(targetUrl).hostname;
-              const docsRes = await fetch(`${API_BASE}/api/docs/${domain}`);
+              const docsRes = await fetch(`${API_BASE}/api/docs/${domain}`, { headers: apiHeaders() });
               markdown = await docsRes.text();
             }
 
