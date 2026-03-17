@@ -16,11 +16,13 @@ import GenerateTab from "../components/GenerateTab";
 import BatchTab from "../components/BatchTab";
 import BenchmarkTab from "../components/BenchmarkTab";
 import APIBrowser from "../components/APIBrowser";
+import GuidePage from "../components/GuidePage";
 
-// ─── Auth Gate ──────────────────────────────────────────────────────
+// ─── Landing Page ───────────────────────────────────────────────────────
 
-function AuthGate({ onAuth }: { onAuth: (email: string) => void }) {
-  const [mode, setMode] = useState<"login" | "register">("login");
+function LandingPage({ onAuth }: { onAuth: (email: string) => void }) {
+  const [showAuth, setShowAuth] = useState(false);
+  const [mode, setMode] = useState<"login" | "register">("register");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -30,105 +32,319 @@ function AuthGate({ onAuth }: { onAuth: (email: string) => void }) {
     e.preventDefault();
     setError("");
     setLoading(true);
-
     const result = mode === "register"
       ? await apiRegister(email, password)
       : await apiLogin(email, password);
-
     setLoading(false);
-
-    if ("error" in result) {
-      setError(result.error);
-      return;
-    }
-
+    if ("error" in result) { setError(result.error); return; }
     setAuthToken(result.token);
     onAuth(result.user.email);
   }
 
-  return (
-    <main style={{ maxWidth: 440, margin: "0 auto", padding: "80px 20px" }}>
-      <div style={{ textAlign: "center", marginBottom: 40 }}>
-        <h1 style={{ fontSize: 48, fontWeight: 700, marginBottom: 8 }}>
-          <span style={{ color: "#3b82f6" }}>Web</span>Map
-        </h1>
-        <p style={{ color: "#888", fontSize: 16 }}>
-          AI-powered website documentation for agents
-        </p>
-      </div>
+  function openAuth(m: "login" | "register") {
+    setMode(m);
+    setShowAuth(true);
+    setError("");
+  }
 
-      <div style={{
-        backgroundColor: "#111", border: "1px solid #222", borderRadius: 12,
-        padding: 32,
+  // Feature cards data
+  const features = [
+    {
+      icon: "\u{1F310}",
+      title: "Crawl Any Website",
+      desc: "Playwright-powered crawler visits every page, maps navigation, and discovers all interactive elements automatically.",
+    },
+    {
+      icon: "\u{1F4C4}",
+      title: "Structured Documentation",
+      desc: "Generates markdown docs with site structure, forms, buttons, workflows, and navigation patterns \u2014 optimized for AI context windows.",
+    },
+    {
+      icon: "\u{1F916}",
+      title: "Agent Benchmarking",
+      desc: "Compare 11 different CUA methods head-to-head. Measure accuracy, speed, and cost across real tasks on real websites.",
+    },
+    {
+      icon: "\u{26A1}",
+      title: "Programmatic Site APIs",
+      desc: "Auto-discover typed, self-tested functions for every site interaction. Agents call functions instead of clicking pixels.",
+    },
+    {
+      icon: "\u{1F4CA}",
+      title: "Multi-Method Analysis",
+      desc: "Composite scoring (accuracy + cost + speed) with per-site breakdowns, industry dataset support, and exportable results.",
+    },
+    {
+      icon: "\u{1F512}",
+      title: "Bring Your Own Key",
+      desc: "Your Anthropic API key stays in your browser. We never store it. All data is private and scoped to your account.",
+    },
+  ];
+
+  const howItWorks = [
+    { step: "1", title: "Sign up & add your API key", desc: "Create a free account and paste your Anthropic API key. It stays in your browser." },
+    { step: "2", title: "Enter a URL", desc: "Paste any website URL. WebMap crawls it with a real browser and maps every page." },
+    { step: "3", title: "Get AI-ready docs", desc: "Copy the generated markdown into any AI assistant to give it deep knowledge of that site." },
+  ];
+
+  return (
+    <div style={{ backgroundColor: "#0a0a0a", color: "#ededed", minHeight: "100vh" }}>
+      {/* Nav */}
+      <nav style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        maxWidth: 1200, margin: "0 auto", padding: "20px 24px",
       }}>
-        <div style={{ display: "flex", gap: 0, marginBottom: 24 }}>
-          <button
-            onClick={() => { setMode("login"); setError(""); }}
-            style={{
-              flex: 1, padding: "10px 0", fontSize: 15, fontWeight: mode === "login" ? 700 : 400,
-              backgroundColor: mode === "login" ? "#1a1a2e" : "transparent",
-              color: mode === "login" ? "#3b82f6" : "#666",
-              border: "1px solid #333", borderRadius: "8px 0 0 8px", cursor: "pointer",
-            }}
-          >
+        <div style={{ fontSize: 24, fontWeight: 700 }}>
+          <span style={{ color: "#3b82f6" }}>Web</span>Map
+        </div>
+        <div style={{ display: "flex", gap: 12 }}>
+          <button onClick={() => openAuth("login")} style={{
+            padding: "8px 20px", fontSize: 14, borderRadius: 8,
+            border: "1px solid #333", backgroundColor: "transparent",
+            color: "#ededed", cursor: "pointer",
+          }}>
             Log In
           </button>
-          <button
-            onClick={() => { setMode("register"); setError(""); }}
-            style={{
-              flex: 1, padding: "10px 0", fontSize: 15, fontWeight: mode === "register" ? 700 : 400,
-              backgroundColor: mode === "register" ? "#1a1a2e" : "transparent",
-              color: mode === "register" ? "#3b82f6" : "#666",
-              border: "1px solid #333", borderRadius: "0 8px 8px 0", cursor: "pointer",
-            }}
-          >
-            Sign Up
+          <button onClick={() => openAuth("register")} style={{
+            padding: "8px 20px", fontSize: 14, borderRadius: 8,
+            border: "none", backgroundColor: "#3b82f6",
+            color: "#fff", cursor: "pointer", fontWeight: 600,
+          }}>
+            Get Started
           </button>
         </div>
+      </nav>
 
-        <form onSubmit={handleSubmit}>
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            style={{ ...inputStyle, width: "100%", marginBottom: 12, boxSizing: "border-box" }}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={6}
-            style={{ ...inputStyle, width: "100%", marginBottom: 16, boxSizing: "border-box" }}
-          />
+      {/* Hero */}
+      <section style={{
+        maxWidth: 800, margin: "0 auto", textAlign: "center",
+        padding: "80px 24px 60px",
+      }}>
+        <div style={{
+          display: "inline-block", padding: "6px 16px", borderRadius: 20,
+          backgroundColor: "#1a1a2e", border: "1px solid #2a2a4e",
+          fontSize: 13, color: "#818cf8", marginBottom: 24,
+        }}>
+          Open-source AI agent tooling
+        </div>
+        <h1 style={{
+          fontSize: 56, fontWeight: 800, lineHeight: 1.1,
+          marginBottom: 20, letterSpacing: "-0.02em",
+        }}>
+          Turn any website into{" "}
+          <span style={{
+            background: "linear-gradient(135deg, #3b82f6, #818cf8)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+          }}>
+            AI-ready documentation
+          </span>
+        </h1>
+        <p style={{
+          fontSize: 20, color: "#888", lineHeight: 1.6,
+          maxWidth: 600, margin: "0 auto 40px",
+        }}>
+          WebMap crawls websites, maps their structure and interactive elements, and
+          generates structured docs that AI agents can use to navigate and act.
+        </p>
+        <div style={{ display: "flex", gap: 16, justifyContent: "center" }}>
+          <button onClick={() => openAuth("register")} style={{
+            padding: "14px 32px", fontSize: 17, fontWeight: 600,
+            borderRadius: 10, border: "none", backgroundColor: "#3b82f6",
+            color: "#fff", cursor: "pointer",
+          }}>
+            Start for Free
+          </button>
+          <button onClick={() => document.getElementById("features")?.scrollIntoView({ behavior: "smooth" })} style={{
+            padding: "14px 32px", fontSize: 17, fontWeight: 500,
+            borderRadius: 10, border: "1px solid #333", backgroundColor: "transparent",
+            color: "#ededed", cursor: "pointer",
+          }}>
+            Learn More
+          </button>
+        </div>
+        <p style={{ fontSize: 13, color: "#555", marginTop: 16 }}>
+          Free to use &mdash; you only pay for your own Anthropic API usage.
+        </p>
+      </section>
 
-          {error && (
-            <div style={{
-              color: "#ef4444", fontSize: 13, marginBottom: 12,
-              padding: "8px 12px", backgroundColor: "#1a0000", borderRadius: 6,
-              border: "1px solid #3a0000",
+      {/* Features */}
+      <section id="features" style={{ maxWidth: 1100, margin: "0 auto", padding: "40px 24px 80px" }}>
+        <h2 style={{ textAlign: "center", fontSize: 32, fontWeight: 700, marginBottom: 12 }}>
+          Everything you need
+        </h2>
+        <p style={{ textAlign: "center", fontSize: 16, color: "#666", marginBottom: 48 }}>
+          From simple doc generation to full agent benchmarking.
+        </p>
+
+        <div style={{
+          display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+          gap: 20,
+        }}>
+          {features.map((f) => (
+            <div key={f.title} style={{
+              backgroundColor: "#111", border: "1px solid #1a1a1a",
+              borderRadius: 12, padding: "28px 24px",
+              transition: "border-color 0.2s",
             }}>
-              {error}
+              <div style={{ fontSize: 28, marginBottom: 12 }}>{f.icon}</div>
+              <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: "#ededed" }}>
+                {f.title}
+              </h3>
+              <p style={{ fontSize: 14, color: "#888", lineHeight: 1.6, margin: 0 }}>
+                {f.desc}
+              </p>
             </div>
-          )}
+          ))}
+        </div>
+      </section>
 
-          <button
-            type="submit"
-            disabled={loading || !email || !password}
+      {/* How it works */}
+      <section style={{
+        backgroundColor: "#080810", borderTop: "1px solid #1a1a1a",
+        borderBottom: "1px solid #1a1a1a", padding: "80px 24px",
+      }}>
+        <div style={{ maxWidth: 800, margin: "0 auto" }}>
+          <h2 style={{ textAlign: "center", fontSize: 32, fontWeight: 700, marginBottom: 48 }}>
+            How it works
+          </h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+            {howItWorks.map((s) => (
+              <div key={s.step} style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+                <div style={{
+                  width: 48, height: 48, borderRadius: "50%",
+                  backgroundColor: "#1a1a2e", border: "2px solid #3b82f6",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 20, fontWeight: 700, color: "#3b82f6", flexShrink: 0,
+                }}>
+                  {s.step}
+                </div>
+                <div>
+                  <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 4, color: "#ededed" }}>
+                    {s.title}
+                  </h3>
+                  <p style={{ fontSize: 15, color: "#888", lineHeight: 1.6, margin: 0 }}>
+                    {s.desc}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* CTA */}
+      <section style={{
+        maxWidth: 600, margin: "0 auto", textAlign: "center",
+        padding: "80px 24px 100px",
+      }}>
+        <h2 style={{ fontSize: 32, fontWeight: 700, marginBottom: 12 }}>
+          Ready to get started?
+        </h2>
+        <p style={{ fontSize: 16, color: "#888", marginBottom: 32 }}>
+          Create an account in seconds. No credit card required.
+        </p>
+        <button onClick={() => openAuth("register")} style={{
+          padding: "16px 40px", fontSize: 18, fontWeight: 600,
+          borderRadius: 10, border: "none", backgroundColor: "#3b82f6",
+          color: "#fff", cursor: "pointer",
+        }}>
+          Create Free Account
+        </button>
+      </section>
+
+      {/* Footer */}
+      <footer style={{
+        borderTop: "1px solid #1a1a1a", padding: "24px",
+        textAlign: "center", fontSize: 13, color: "#444",
+      }}>
+        WebMap &mdash; Open-source AI agent tooling
+      </footer>
+
+      {/* Auth Modal */}
+      {showAuth && (
+        <div
+          onClick={() => setShowAuth(false)}
+          style={{
+            position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            zIndex: 1000, backdropFilter: "blur(4px)",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
             style={{
-              width: "100%", padding: "14px 0", fontSize: 16, fontWeight: 600,
-              borderRadius: 8, border: "none", cursor: loading ? "wait" : "pointer",
-              backgroundColor: loading ? "#1e3a5f" : "#3b82f6", color: "#fff",
+              backgroundColor: "#111", border: "1px solid #222", borderRadius: 16,
+              padding: 36, width: 400, maxWidth: "90vw",
             }}
           >
-            {loading ? "..." : mode === "register" ? "Create Account" : "Log In"}
-          </button>
-        </form>
-      </div>
-    </main>
+            <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4, textAlign: "center" }}>
+              <span style={{ color: "#3b82f6" }}>Web</span>Map
+            </h2>
+            <p style={{ color: "#666", fontSize: 14, textAlign: "center", marginBottom: 24 }}>
+              {mode === "register" ? "Create your account" : "Welcome back"}
+            </p>
+
+            <div style={{ display: "flex", gap: 0, marginBottom: 24 }}>
+              <button
+                onClick={() => { setMode("login"); setError(""); }}
+                style={{
+                  flex: 1, padding: "10px 0", fontSize: 14, fontWeight: mode === "login" ? 700 : 400,
+                  backgroundColor: mode === "login" ? "#1a1a2e" : "transparent",
+                  color: mode === "login" ? "#3b82f6" : "#666",
+                  border: "1px solid #333", borderRadius: "8px 0 0 8px", cursor: "pointer",
+                }}
+              >
+                Log In
+              </button>
+              <button
+                onClick={() => { setMode("register"); setError(""); }}
+                style={{
+                  flex: 1, padding: "10px 0", fontSize: 14, fontWeight: mode === "register" ? 700 : 400,
+                  backgroundColor: mode === "register" ? "#1a1a2e" : "transparent",
+                  color: mode === "register" ? "#3b82f6" : "#666",
+                  border: "1px solid #333", borderRadius: "0 8px 8px 0", cursor: "pointer",
+                }}
+              >
+                Sign Up
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit}>
+              <input
+                type="email" placeholder="Email" value={email}
+                onChange={(e) => setEmail(e.target.value)} required
+                style={{ ...inputStyle, width: "100%", marginBottom: 12, boxSizing: "border-box" }}
+              />
+              <input
+                type="password" placeholder="Password (min 8 characters)" value={password}
+                onChange={(e) => setPassword(e.target.value)} required minLength={8}
+                style={{ ...inputStyle, width: "100%", marginBottom: 16, boxSizing: "border-box" }}
+              />
+              {error && (
+                <div style={{
+                  color: "#ef4444", fontSize: 13, marginBottom: 12,
+                  padding: "8px 12px", backgroundColor: "#1a0000", borderRadius: 6,
+                  border: "1px solid #3a0000",
+                }}>
+                  {error}
+                </div>
+              )}
+              <button
+                type="submit" disabled={loading || !email || !password}
+                style={{
+                  width: "100%", padding: "14px 0", fontSize: 16, fontWeight: 600,
+                  borderRadius: 8, border: "none", cursor: loading ? "wait" : "pointer",
+                  backgroundColor: loading ? "#1e3a5f" : "#3b82f6", color: "#fff",
+                }}
+              >
+                {loading ? "..." : mode === "register" ? "Create Account" : "Log In"}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -262,12 +478,18 @@ function App({ userEmail, onLogout }: { userEmail: string; onLogout: () => void 
         <button style={tabStyle(tab === "batch")} onClick={() => setTab("batch")}>Batch Test</button>
         <button style={tabStyle(tab === "benchmark")} onClick={() => setTab("benchmark")}>Benchmark</button>
         <button style={tabStyle(tab === "apis")} onClick={() => setTab("apis")}>APIs</button>
+        <button style={tabStyle(tab === "guide")} onClick={() => setTab("guide")}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            Guide
+          </span>
+        </button>
       </div>
 
       {tab === "generate" && <GenerateTab />}
       {tab === "batch" && <BatchTab />}
       {tab === "benchmark" && <BenchmarkTab />}
       {tab === "apis" && <APIBrowser />}
+      {tab === "guide" && <GuidePage />}
     </main>
   );
 }
@@ -280,10 +502,8 @@ export default function Home() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    // Check for existing auth on mount
     if (isLoggedIn()) {
       setAuthed(true);
-      // Decode email from JWT payload (base64)
       try {
         const token = localStorage.getItem("webmap_auth_token") || "";
         const payload = JSON.parse(atob(token.split(".")[1]));
@@ -295,7 +515,7 @@ export default function Home() {
     setReady(true);
   }, []);
 
-  if (!ready) return null; // avoid flash
+  if (!ready) return null;
 
   function handleLogout() {
     logout();
@@ -304,7 +524,7 @@ export default function Home() {
   }
 
   if (!authed) {
-    return <AuthGate onAuth={(email) => { setAuthed(true); setUserEmail(email); }} />;
+    return <LandingPage onAuth={(email) => { setAuthed(true); setUserEmail(email); }} />;
   }
 
   return <App userEmail={userEmail} onLogout={handleLogout} />;
