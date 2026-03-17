@@ -46,8 +46,9 @@ COPY --from=builder /app/packages/api/dist packages/api/dist
 COPY --from=builder /app/packages/cli/dist packages/cli/dist
 COPY --from=builder /app/packages/mcp/dist packages/mcp/dist
 
-# Create data directory for persistence
-RUN mkdir -p packages/api/data && chmod 700 packages/api/data
+# Data directory — mount a Railway Volume here for persistence
+RUN mkdir -p /data && chmod 700 /data
+ENV DATA_DIR=/data
 
 ENV NODE_ENV=production
 ENV PORT=3001

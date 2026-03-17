@@ -10,7 +10,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "..", "data");
+const DATA_DIR = process.env.DATA_DIR || join(__dirname, "..", "data");
 
 // ─── Low-level helpers ───────────────────────────────────────────────────────
 
