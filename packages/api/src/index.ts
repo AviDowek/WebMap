@@ -42,6 +42,7 @@ import benchmarkSitesRoutes from "./routes/benchmark-sites.js";
 import benchmarkRunsRoutes from "./routes/benchmark-runs.js";
 import benchmarkMultiRoutes from "./routes/benchmark-multi.js";
 import apiGenRoutes from "./routes/api-gen.js";
+import adminRoutes from "./routes/admin.js";
 import proxyRoutes from "./routes/proxy.js";
 
 // ─── App ────────────────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ app.route("/", benchmarkSitesRoutes);
 app.route("/", benchmarkRunsRoutes);
 app.route("/", benchmarkMultiRoutes);
 app.route("/", apiGenRoutes);
+app.route("/", adminRoutes);
 app.route("/", proxyRoutes);
 
 // ─── Export for testing ─────────────────────────────────────────────────────

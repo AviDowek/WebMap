@@ -1,6 +1,6 @@
 // ─── Types ───────────────────────────────────────────────────────────
 
-export type Tab = "generate" | "batch" | "benchmark" | "apis" | "guide";
+export type Tab = "generate" | "batch" | "benchmark" | "apis" | "guide" | "admin";
 
 export interface CrawlStatus {
   state: "idle" | "crawling" | "done" | "error";

@@ -80,6 +80,51 @@ export async function apiLogin(email: string, password: string): Promise<{ token
   return res.json();
 }
 
+// ─── Admin ───────────────────────────────────────────────────────────
+
+const ADMIN_EMAIL = "dowekavi@gmail.com";
+
+export function isAdminUser(): boolean {
+  try {
+    const token = getAuthToken();
+    if (!token) return false;
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return payload.email?.toLowerCase() === ADMIN_EMAIL;
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchAdminStats(): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/api/admin/stats`, { headers: apiHeaders() });
+  if (!res.ok) throw new Error("Forbidden");
+  return res.json();
+}
+
+export async function fetchAdminUsers(): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/api/admin/users`, { headers: apiHeaders() });
+  if (!res.ok) throw new Error("Forbidden");
+  return res.json();
+}
+
+export async function fetchAdminJobs(): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/api/admin/jobs`, { headers: apiHeaders() });
+  if (!res.ok) throw new Error("Forbidden");
+  return res.json();
+}
+
+export async function fetchAdminHistory(): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/api/admin/history`, { headers: apiHeaders() });
+  if (!res.ok) throw new Error("Forbidden");
+  return res.json();
+}
+
+export async function fetchAdminCache(): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/api/admin/cache`, { headers: apiHeaders() });
+  if (!res.ok) throw new Error("Forbidden");
+  return res.json();
+}
+
 // ─── Generic Fetch ──────────────────────────────────────────────────
 
 export async function fetchAPI(

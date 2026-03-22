@@ -24,6 +24,14 @@ export interface JWTPayload {
   email: string;
 }
 
+// ─── Admin ──────────────────────────────────────────────────────────
+
+const ADMIN_EMAIL = "dowekavi@gmail.com";
+
+export function isAdminEmail(email: string): boolean {
+  return email.toLowerCase() === ADMIN_EMAIL;
+}
+
 // ─── Config ─────────────────────────────────────────────────────────
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -127,4 +135,41 @@ export function getUserIdFromHeader(authHeader: string | undefined): string | nu
   const token = authHeader.slice(7);
   const payload = verifyToken(token);
   return payload?.userId ?? null;
+}
+
+/**
+ * Extract email from an Authorization: Bearer <jwt> header.
+ * Returns null if missing/invalid.
+ */
+export function getEmailFromHeader(authHeader: string | undefined): string | null {
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  const token = authHeader.slice(7);
+  const payload = verifyToken(token);
+  return payload?.email ?? null;
+}
+
+/**
+ * Check if the request is from an admin user.
+ */
+export function isAdminRequest(authHeader: string | undefined): boolean {
+  const email = getEmailFromHeader(authHeader);
+  return email !== null && isAdminEmail(email);
+}
+
+/**
+ * Get all registered users (without password hashes).
+ */
+export function getAllUsers(): Array<{ id: string; email: string; createdAt: string }> {
+  return Object.values(usersStore.data).map((u) => ({
+    id: u.id,
+    email: u.email,
+    createdAt: u.createdAt,
+  }));
+}
+
+/**
+ * Get total user count.
+ */
+export function getUserCount(): number {
+  return Object.keys(usersStore.data).length;
 }

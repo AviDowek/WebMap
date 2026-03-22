@@ -11,12 +11,14 @@ import {
   setAnthropicKey,
   apiRegister,
   apiLogin,
+  isAdminUser,
 } from "../lib/api";
 import GenerateTab from "../components/GenerateTab";
 import BatchTab from "../components/BatchTab";
 import BenchmarkTab from "../components/BenchmarkTab";
 import APIBrowser from "../components/APIBrowser";
 import GuidePage from "../components/GuidePage";
+import AdminTab from "../components/AdminTab";
 
 // ─── Landing Page ───────────────────────────────────────────────────────
 
@@ -485,6 +487,11 @@ function App({ userEmail, onLogout }: { userEmail: string; onLogout: () => void 
             Guide
           </span>
         </button>
+        {isAdminUser() && (
+          <button style={tabStyle(tab === "admin")} onClick={() => setTab("admin")}>
+            Admin
+          </button>
+        )}
       </div>
 
       {tab === "generate" && <GenerateTab />}
@@ -492,6 +499,7 @@ function App({ userEmail, onLogout }: { userEmail: string; onLogout: () => void 
       {tab === "benchmark" && <BenchmarkTab />}
       {tab === "apis" && <APIBrowser />}
       {tab === "guide" && <GuidePage />}
+      {tab === "admin" && <AdminTab />}
     </main>
   );
 }
